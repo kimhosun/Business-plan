@@ -32,13 +32,13 @@ description: Audit Korean national R&D laws, decrees, ministerial rules, adminis
 대상 Markdown이 여러 개면 먼저 포함 스크립트를 실행하라.
 
 ```powershell
-python .\skills\verify-korean-rnd-regulations\scripts\inventory_regulations.py .\연구개발계획서_장별 --as-of YYYY-MM-DD --format markdown
+python .\.agents\skills\verify-korean-rnd-regulations\scripts\inventory_regulations.py .\연구개발계획서_장별 --as-of YYYY-MM-DD --format markdown
 ```
 
 JSON이 필요하면 다음과 같이 실행하라.
 
 ```powershell
-python .\skills\verify-korean-rnd-regulations\scripts\inventory_regulations.py .\연구개발계획서_장별 --as-of YYYY-MM-DD --format json --output .\regulation-inventory.json
+python .\.agents\skills\verify-korean-rnd-regulations\scripts\inventory_regulations.py .\연구개발계획서_장별 --as-of YYYY-MM-DD --format json --output .\regulation-inventory.json
 ```
 
 스크립트 결과의 다음 경고를 우선 검토하라.
