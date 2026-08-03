@@ -1,0 +1,4 @@
+interface:
+  display_name: "국내 R&D 규정 최신성 검증"
+  short_description: "국내 연구개발 규정·지침의 현행성과 공식 근거를 검증합니다"
+  default_prompt: "Use $verify-korean-rnd-regulations to audit every Korean R&D regulation cited in this project against current official sources."
