@@ -13,12 +13,12 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Body, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import claude_service, config, pipeline, presets, regulations, store
+from . import claude_service, config, pipeline, presets, regulations, store, tables
 from .schemas import (
     ChatBody,
     GenerateBody,
@@ -222,6 +222,52 @@ async def regulations_pdf(pid: str, nid: str):
         media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="regulations_{nid}.pdf"'},
     )
+
+
+@app.get("/api/projects/{pid}/nodes/{nid}/tables")
+async def get_tables(pid: str, nid: str):
+    """절 nid 의 표를 엑셀형 그리드로. (8장 등 표 중심 절의 입력 탭용)"""
+    _require_project(pid)
+    _node_or_404(pid, nid)
+    return tables.tables_for(pid, nid)
+
+
+@app.put("/api/projects/{pid}/nodes/{nid}/tables")
+async def put_tables(pid: str, nid: str, body: dict = Body(...)):
+    """그리드 편집(변경 셀만) 저장 → yaml 반영. body {cells:[{paths,text}]}."""
+    _require_project(pid)
+    _node_or_404(pid, nid)
+    cells = (body or {}).get("cells") or []
+    stats = tables.save_cells(pid, nid, cells)
+    return stats
+
+
+@app.get("/api/projects/{pid}/nodes/{nid}/tables.xlsx")
+async def get_tables_xlsx(pid: str, nid: str):
+    """절의 표들을 .xlsx 로 내려받기(표마다 시트 1개)."""
+    _require_project(pid)
+    _node_or_404(pid, nid)
+    out = store.output_dir(pid) / f"tables_{nid}.xlsx"
+    tables.to_xlsx(pid, nid, out)
+    return FileResponse(
+        str(out),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=f"tables_{nid}.xlsx",
+    )
+
+
+@app.post("/api/projects/{pid}/nodes/{nid}/tables/import-xlsx")
+async def import_tables_xlsx(pid: str, nid: str, file: UploadFile = File(...)):
+    """업로드한 .xlsx 를 위치 기준으로 그리드에 되읽어 저장."""
+    _require_project(pid)
+    _node_or_404(pid, nid)
+    tmp = store.output_dir(pid) / f"_import_{nid}.xlsx"
+    tmp.write_bytes(await file.read())
+    try:
+        stats = tables.from_xlsx(pid, nid, tmp)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"엑셀 읽기 실패: {exc}") from exc
+    return stats
 
 
 @app.put("/api/projects/{pid}/nodes/{nid}/input")

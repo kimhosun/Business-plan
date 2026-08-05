@@ -89,6 +89,11 @@ const API = {
   putPrompts: (pid, nid, style, structure) =>
     api(`/api/projects/${pid}/nodes/${nid}/prompts`, jsonBody({ style, structure })),
   getPreset: (nid) => api(`/api/presets/${nid}`),
+  getTables: (pid, nid) => api(`/api/projects/${pid}/nodes/${nid}/tables`),
+  putTables: (pid, nid, cells) => api(`/api/projects/${pid}/nodes/${nid}/tables`, jsonBody({ cells })),
+  tablesXlsxUrl: (pid, nid) => `/api/projects/${pid}/nodes/${nid}/tables.xlsx`,
+  importTablesXlsx: (pid, nid, formData) =>
+    api(`/api/projects/${pid}/nodes/${nid}/tables/import-xlsx`, { method: "POST", body: formData }),
   putInput: (pid, nid, input) => api(`/api/projects/${pid}/nodes/${nid}/input`, jsonBody({ input })),
   chat: (pid, nid, message, apply) =>
     api(`/api/projects/${pid}/nodes/${nid}/chat`, postJson({ message, apply })),
@@ -361,6 +366,7 @@ async function selectNode(nid) {
     state.nid = nid;
     state.node = node;
     renderNode(node);
+    loadTables(nid);
   } catch (e) {
     toast("노드 로드 실패: " + e.message, "err");
   }
@@ -697,6 +703,119 @@ async function doBuild() {
 /* ------------------------------------------------------------------ */
 /* 이벤트 바인딩 / 부팅                                                */
 /* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/* 표(엑셀형 그리드) 입력 — 8장 등 표 중심 절                          */
+/* ------------------------------------------------------------------ */
+const tablesState = { data: null, dirty: new Map() };
+
+async function loadTables(nid) {
+  const wrap = $("#tables-editor");
+  if (!nid || !state.pid) { wrap.hidden = true; return; }   // null nid 조기 차단(경쟁 방지)
+  tablesState.data = null;
+  tablesState.dirty.clear();
+  $("#tables-grids").innerHTML = "";
+  try {
+    const data = await API.getTables(state.pid, nid);
+    if (state.nid !== nid) return;                          // 스테일 응답 무시(다른 절로 이동)
+    if (!data.has_tables) { wrap.hidden = true; return; }
+    tablesState.data = data;
+    wrap.hidden = false;
+    $("#btn-tables-xlsx").href = API.tablesXlsxUrl(state.pid, nid);
+    renderTables(data);
+  } catch (_) {
+    if (state.nid === nid) wrap.hidden = true;
+  }
+}
+
+function renderTables(data) {
+  const host = $("#tables-grids");
+  host.innerHTML = "";
+  data.tables.forEach((t, ti) => {
+    host.appendChild(el("div", { class: "grid-cap", text: `표 ${ti + 1} · ${t.rows}행 × ${t.cols}열` }));
+    const cmap = new Map();
+    t.cells.forEach((c) => cmap.set(c.row + "," + c.col, c));
+    const covered = new Set();
+    t.cells.forEach((c) => {
+      for (let dr = 0; dr < (c.rowspan || 1); dr++)
+        for (let dc = 0; dc < (c.colspan || 1); dc++)
+          if (dr || dc) covered.add(c.row + dr + "," + (c.col + dc));
+    });
+    const table = el("table", { class: "xls-grid" });
+    for (let r = 0; r < t.rows; r++) {
+      const tr = el("tr");
+      for (let c = 0; c < t.cols; c++) {
+        const key = r + "," + c;
+        if (covered.has(key)) continue;
+        const cell = cmap.get(key);
+        const td = el("td", { class: r === 0 ? "hd" : "" });
+        if (cell) {
+          if ((cell.rowspan || 1) > 1) td.rowSpan = cell.rowspan;
+          if ((cell.colspan || 1) > 1) td.colSpan = cell.colspan;
+          td.contentEditable = "true";
+          td.textContent = cell.text || "";
+          const paths = cell.paths;
+          const orig = cell.text || "";
+          td.addEventListener("input", () => {
+            const val = td.innerText.replace(/\n$/, "");
+            const k = ti + ":" + key;
+            if (val === orig) tablesState.dirty.delete(k);
+            else tablesState.dirty.set(k, { paths, text: val });
+            const n = tablesState.dirty.size;
+            $("#btn-tables-save").textContent = n ? `표 저장 (${n})` : "표 저장";
+          });
+          td.addEventListener("keydown", gridKeydown);
+        } else {
+          td.className += " empty";
+        }
+        tr.appendChild(td);
+      }
+      table.appendChild(tr);
+    }
+    const scroll = el("div", { class: "grid-scroll" });
+    scroll.appendChild(table);
+    host.appendChild(scroll);
+  });
+  $("#btn-tables-save").textContent = "표 저장";
+}
+
+function gridKeydown(e) {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    const td = e.target;
+    const tr = td.parentElement;
+    const idx = Array.from(tr.children).indexOf(td);
+    const nextRow = tr.nextElementSibling;
+    if (nextRow && nextRow.children[idx]) nextRow.children[idx].focus();
+  }
+}
+
+async function saveTables() {
+  if (!state.pid || !state.nid) return;
+  const cells = Array.from(tablesState.dirty.values());
+  if (!cells.length) { toast("변경된 셀이 없습니다.", ""); return; }
+  try {
+    const st = await API.putTables(state.pid, state.nid, cells);
+    tablesState.dirty.clear();
+    $("#btn-tables-save").textContent = "표 저장";
+    toast(`표 저장됨 (${st.updated}개). [hwpx 빌드]로 표에 반영됩니다.`, "ok");
+  } catch (e) {
+    toast("표 저장 실패: " + e.message, "err");
+  }
+}
+
+async function importTablesXlsx(file) {
+  if (!state.pid || !state.nid || !file) return;
+  const fd = new FormData();
+  fd.append("file", file);
+  try {
+    const st = await API.importTablesXlsx(state.pid, state.nid, fd);
+    toast(`엑셀 가져오기 완료 (${st.updated}셀). 다시 로드합니다.`, "ok");
+    await loadTables(state.nid);
+  } catch (e) {
+    toast("엑셀 가져오기 실패: " + e.message, "err");
+  }
+}
+
 function bindEvents() {
   $("#btn-new-project").addEventListener("click", createProject);
   $("#project-select").addEventListener("change", (e) => openProject(e.target.value));
@@ -709,6 +828,12 @@ function bindEvents() {
   $("#btn-template-generate").addEventListener("click", generateTemplate);
   $("#btn-prompts-save").addEventListener("click", savePrompts);
   $("#btn-preset-load").addEventListener("click", loadPreset);
+  $("#btn-tables-save").addEventListener("click", saveTables);
+  $("#tables-xlsx-file").addEventListener("change", (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (f) importTablesXlsx(f);
+    e.target.value = "";
+  });
   $("#btn-input-save").addEventListener("click", saveInput);
   $("#btn-convert").addEventListener("click", doConvert);
   $("#btn-reg-pdf").addEventListener("click", openRegulationsPdf);

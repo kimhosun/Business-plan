@@ -104,6 +104,21 @@
 
         <!-- 3. 입력 -->
         <div class="panel" data-panel="input">
+          <!-- 표 중심 절(예 8장): 엑셀형 그리드 입력 → 최종 hwpx 표로 반영 -->
+          <div id="tables-editor" class="tables-editor" hidden>
+            <div class="tables-bar">
+              <span class="tables-title">📊 표 입력 (엑셀형) — 저장 후 [hwpx 빌드] 하면 표로 반영됩니다</span>
+              <span class="tables-actions">
+                <button id="btn-tables-save" class="btn btn-primary">표 저장</button>
+                <a id="btn-tables-xlsx" class="btn btn-secondary" href="#" download>엑셀 내려받기</a>
+                <label class="btn btn-secondary" for="tables-xlsx-file" style="margin:0">엑셀 올리기
+                  <input type="file" id="tables-xlsx-file" accept=".xlsx" hidden />
+                </label>
+              </span>
+            </div>
+            <div id="tables-grids" class="tables-grids"></div>
+            <hr class="tables-sep" />
+          </div>
           <label class="field-label" for="input-text">사용자 원문 입력</label>
           <textarea id="input-text" rows="14"
                     placeholder="변환할 원문을 입력하세요. 아래 채팅으로 AI에게 작성을 맡길 수도 있습니다."></textarea>
