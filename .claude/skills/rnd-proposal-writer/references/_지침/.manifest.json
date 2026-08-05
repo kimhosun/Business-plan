@@ -1,0 +1,86 @@
+{
+  "schema": "md-guidelines-manifest/1.0",
+  "common_sha256": "c0798c39aa6e94a5db30d49e89da3587921db22ab365821f79afc9b3dabbe137",
+  "files": {
+    "00_공통_작성원칙.md": {
+      "source_sha256": "c0798c39aa6e94a5db30d49e89da3587921db22ab365821f79afc9b3dabbe137",
+      "output": "00_공통_작성원칙.지침.md"
+    },
+    "절_1-1_개발대상_기술제품_개요.md": {
+      "source_sha256": "ca0730e8318553447e89f0fc61d91a9abeab16ed9d94736c5aded610a2088c43",
+      "output": "절_1-1_개발대상_기술제품_개요.지침.md"
+    },
+    "절_1-2_국내외_기술시장_현황.md": {
+      "source_sha256": "a77f4a14cbcd05405f3fdb7b8b361e1762503b1753a1d0d468569c8db98037d0",
+      "output": "절_1-2_국내외_기술시장_현황.지침.md"
+    },
+    "절_1-3_지식재산권_표준화_인증.md": {
+      "source_sha256": "71247cb3d0b512b518aa9c0c1463e8c216255928177024750e9ab1da8d7efcb2",
+      "output": "절_1-3_지식재산권_표준화_인증.지침.md"
+    },
+    "절_2-1_최종목표.md": {
+      "source_sha256": "3e8a3225f8dd425c87bf8c0b8cc5080dea0d1dc4a87ea803fc39b0187f81222c",
+      "output": "절_2-1_최종목표.지침.md"
+    },
+    "절_2-2_연차별_개발목표_내용.md": {
+      "source_sha256": "07cd939f1f80ff3263b72f282d62fca4a17cac5e9cbce9045e381394c38fd09d",
+      "output": "절_2-2_연차별_개발목표_내용.지침.md"
+    },
+    "절_2-3_수행일정_주요결과물.md": {
+      "source_sha256": "6f89f9a2b2f7456dcba0757ee7a42a0efa396d4871174ba2bfc135849e2f3ac9",
+      "output": "절_2-3_수행일정_주요결과물.지침.md"
+    },
+    "절_3-1_추진방법_전략.md": {
+      "source_sha256": "feaf7045819bc4eabaaf9cae08552779b02a2a139392641ddd0275edd7b01d59",
+      "output": "절_3-1_추진방법_전략.지침.md"
+    },
+    "절_3-2_추진체계_팀편성도.md": {
+      "source_sha256": "1d45576ea206633b46a1639c0d62ac33a1a64ae8dfc0aa9da05fef2408a1b99e",
+      "output": "절_3-2_추진체계_팀편성도.지침.md"
+    },
+    "절_3-4_일자리창출.md": {
+      "source_sha256": "5dbba96e4296a19a23fda1f96b1fdaaf98cae740e869f2ba6f9536be00fcb2aa",
+      "output": "절_3-4_일자리창출.지침.md"
+    },
+    "절_3-5_실증설비_구축운영.md": {
+      "source_sha256": "cb2fe69d4398a80ae0813e0bb61b9c40d017269e395c6824d2e8611241a0649a",
+      "output": "절_3-5_실증설비_구축운영.지침.md"
+    },
+    "절_4_활용방안_기대효과.md": {
+      "source_sha256": "908e2ec11fccc0f9f9c2f86da6bf875ef8568e8278b76c807f5c5246e6c2e11f",
+      "output": "절_4_활용방안_기대효과.지침.md"
+    },
+    "절_5-1_시장현황_국가RnD실적.md": {
+      "source_sha256": "e9a213777eb201d91338d76aa7e7d31acfd70fe9a1205f0aee548e426348bdf8",
+      "output": "절_5-1_시장현황_국가RnD실적.지침.md"
+    },
+    "절_5-2_지재권_비즈니스모델.md": {
+      "source_sha256": "9dd777c452cb90316bb026d0e412da6c84cb17fe0674264609b37a9151b49950",
+      "output": "절_5-2_지재권_비즈니스모델.지침.md"
+    },
+    "절_5-3_표준화_사회적가치.md": {
+      "source_sha256": "8c11565d5291c21d6bac9f89826adfaf309766c19b55ce308406dfd73e7cba9e",
+      "output": "절_5-3_표준화_사회적가치.지침.md"
+    },
+    "절_5-4_경제적성과.md": {
+      "source_sha256": "a727cc69174af5e13c13d5ae385468497ddb13a08f0c2e15b22b48018d6217ba",
+      "output": "절_5-4_경제적성과.지침.md"
+    },
+    "절_6_안전_보안조치.md": {
+      "source_sha256": "a4f3624027b9999eb9ae4a7a81ac9c7a86e80600d9fd55699cebbcb2f0a8aecd",
+      "output": "절_6_안전_보안조치.지침.md"
+    },
+    "절_7_기관현황.md": {
+      "source_sha256": "9dd6bd4584656afa5e94528224701fa9661f677a122c25017ed94c6addd6c344",
+      "output": "절_7_기관현황.지침.md"
+    },
+    "절_8_연구개발비.md": {
+      "source_sha256": "58986e564a4a0d1c878a869d8a618c146cdc1e0dcfb933cea8a69a6271f72d5c",
+      "output": "절_8_연구개발비.지침.md"
+    },
+    "절_요약문.md": {
+      "source_sha256": "1d00471b92aae63e2035e04e173e0c29a6dbca6382c1b1a83bc1eadcb52f36af",
+      "output": "절_요약문.지침.md"
+    }
+  }
+}

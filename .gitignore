@@ -1,0 +1,8 @@
+# transient / local
+.claude/scheduled_tasks.lock
+.claude/*.lock
+__pycache__/
+*.pyc
+
+# large reference-conversion data (kept local, not tracked)
+/참조문서/
