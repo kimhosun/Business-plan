@@ -3,7 +3,8 @@
 
 rnd-proposal-writer/references/_지침/지침.json(공통원칙 §0~§9 + 절별 지침)을
 단일 원천으로, 각 트리 절(nid)에 맞는 문체(style)/구성(structure)/체크리스트를 조립한다.
-- style     : 어떻게 쓰는가(개조식 종결·마커 계층·정량화·약어) = 공통원칙 §1·§2·§3·§5
+- style     : 어떻게 쓰는가(개조식 종결·마커 계층·정량화·약어).
+              절별 문체(_프롬프트 도출, prompt_styles.json) + 공통 문체 원칙(§1·§2·§3·§5).
 - structure : 무엇을 어떤 골격으로(역할·표준골격·변형·체크리스트) = 절별 지침 directives/checklist
 """
 from __future__ import annotations
@@ -20,6 +21,9 @@ _GUIDE_JSON = (
     / ".claude" / "skills" / "rnd-proposal-writer"
     / "references" / "_지침" / "지침.json"
 )
+
+# 절별 문체(문체 스타일) — _프롬프트 폴더의 절별 '문체·형식 규칙'에서 도출.
+_PROMPT_STYLES_JSON = Path(__file__).resolve().parent / "prompt_styles.json"
 
 # 트리 nid ↔ 지침 파일이 1:1이 아닌 경우 보정(문서 목차 vs rnd-write 분류 차이)
 _OVERRIDES = {
@@ -101,6 +105,25 @@ def skill_for(nid: str) -> str:
 
 
 @lru_cache(maxsize=1)
+def _prompt_styles() -> dict:
+    """절별 문체 스타일(_프롬프트 도출) 맵. {nid: style_text}."""
+    try:
+        data = json.loads(_PROMPT_STYLES_JSON.read_text(encoding="utf-8"))
+        return data.get("styles", {}) or {}
+    except Exception:
+        return {}
+
+
+def _section_style(nid: str) -> str:
+    """절 nid 의 문체 스타일(없으면 빈 문자열). _OVERRIDES 보정 포함."""
+    styles = _prompt_styles()
+    if nid in styles:
+        return styles[nid]
+    alt = _OVERRIDES.get(nid)
+    return styles.get(alt, "") if alt else ""
+
+
+@lru_cache(maxsize=1)
 def _common_style() -> str:
     secs = _guide().get("common_principles", {}).get("sections", [])
     lines = [
@@ -109,6 +132,15 @@ def _common_style() -> str:
     ]
     head = "참조 3문서(D1 장문·D3 상세·D11 단문) 어투를 모방하되 내용은 새로 작성."
     return head + "\n" + "\n".join(lines)
+
+
+def _style_for(nid: str) -> str:
+    """절 nid 의 문체 스타일: 절별 문체(있으면) + 공통 문체 원칙 결합."""
+    common = _common_style()
+    sec = _section_style(nid)
+    if not sec:
+        return common
+    return f"[이 절 문체·형식]\n{sec}\n\n[공통 문체 원칙]\n{common}"
 
 
 @lru_cache(maxsize=1)
@@ -143,8 +175,8 @@ def preset_for(nid: str) -> dict:
     checklist = [_clean(c if isinstance(c, str) else c.get("text", ""))
                  for c in (node.get("checklist") or [])]
 
-    # style: 공통 문체 원칙(전 절 공통)
-    style = _common_style()
+    # style: 절별 문체(_프롬프트 도출) + 공통 문체 원칙
+    style = _style_for(nid)
 
     # structure: 역할 + 공통 구성원칙 + 절별 지침 + 체크리스트
     parts: list[str] = []

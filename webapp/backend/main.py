@@ -270,6 +270,42 @@ async def import_tables_xlsx(pid: str, nid: str, file: UploadFile = File(...)):
     return stats
 
 
+@app.post("/api/projects/{pid}/nodes/{nid}/tables/structure")
+async def tables_structure(pid: str, nid: str, body: dict = Body(...)):
+    """행/열 추가·삭제. body {op:'add_row'|'del_row'|'add_col'|'del_col',
+    table_path, index}. 실패 시 원상복구(400)."""
+    _require_project(pid)
+    _node_or_404(pid, nid)
+    op = (body or {}).get("op")
+    tp = (body or {}).get("table_path")
+    idx = int((body or {}).get("index", 0))
+    if not tp or op not in ("add_row", "del_row", "add_col", "del_col"):
+        raise HTTPException(status_code=400, detail="op/table_path 가 올바르지 않습니다.")
+    fn = {"add_row": tables.add_row, "del_row": tables.delete_row,
+          "add_col": tables.add_col, "del_col": tables.delete_col}[op]
+    try:
+        info = fn(pid, nid, tp, idx)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"구조 편집 실패: {exc}") from exc
+    return {"ok": True, **(info or {})}
+
+
+@app.get("/api/projects/{pid}/nodes/{nid}/tables/formulas")
+async def get_table_formulas(pid: str, nid: str):
+    _require_project(pid)
+    _node_or_404(pid, nid)
+    return {"formulas": tables.get_formulas(pid, nid)}
+
+
+@app.put("/api/projects/{pid}/nodes/{nid}/tables/formulas")
+async def put_table_formulas(pid: str, nid: str, body: dict = Body(...)):
+    _require_project(pid)
+    _node_or_404(pid, nid)
+    return tables.save_formulas(pid, nid, (body or {}).get("formulas") or {})
+
+
 @app.put("/api/projects/{pid}/nodes/{nid}/input")
 async def put_input(pid: str, nid: str, body: InputBody):
     _require_project(pid)
@@ -408,6 +444,27 @@ async def download_final(pid: str):
         media_type="application/octet-stream",
         filename="연구개발계획서.hwpx",
     )
+
+
+@app.get("/api/projects/{pid}/nodes/{nid}/section.hwpx")
+def download_section_hwpx(pid: str, nid: str):
+    """④ 변환 패널에서 호출: 현재 YAML 상태(해당 절 변환분 포함)를 hwpx 로 즉시 복원해 다운로드.
+    문서는 전체 오버레이라 산출물은 현 YAML을 반영한 전체 문서 hwpx 다(해당 절 변환분 포함)."""
+    meta = _require_project(pid)
+    _node_or_404(pid, nid)
+    try:
+        source_hwpx = meta.get("source_hwpx") or str(store.project_dir(pid) / "source.hwpx")
+        out_dir = store.output_dir(pid)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        final_hwpx = out_dir / "final.hwpx"
+        pipeline.restore(source_hwpx, store.yaml_dir(pid), final_hwpx)
+        return FileResponse(
+            str(final_hwpx),
+            media_type="application/octet-stream",
+            filename="연구개발계획서.hwpx",
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"hwpx 변환 실패: {exc}") from exc
 
 
 @app.get("/api/projects/{pid}/preview.pdf")

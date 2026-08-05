@@ -94,6 +94,11 @@ const API = {
   tablesXlsxUrl: (pid, nid) => `/api/projects/${pid}/nodes/${nid}/tables.xlsx`,
   importTablesXlsx: (pid, nid, formData) =>
     api(`/api/projects/${pid}/nodes/${nid}/tables/import-xlsx`, { method: "POST", body: formData }),
+  tableStructure: (pid, nid, op, table_path, index) =>
+    api(`/api/projects/${pid}/nodes/${nid}/tables/structure`, postJson({ op, table_path, index })),
+  getFormulas: (pid, nid) => api(`/api/projects/${pid}/nodes/${nid}/tables/formulas`),
+  putFormulas: (pid, nid, formulas) =>
+    api(`/api/projects/${pid}/nodes/${nid}/tables/formulas`, jsonBody({ formulas })),
   putInput: (pid, nid, input) => api(`/api/projects/${pid}/nodes/${nid}/input`, jsonBody({ input })),
   chat: (pid, nid, message, apply) =>
     api(`/api/projects/${pid}/nodes/${nid}/chat`, postJson({ message, apply })),
@@ -102,6 +107,7 @@ const API = {
   build: (pid) => api(`/api/projects/${pid}/build`, postJson({})),
   downloadUrl: (pid) => `/api/projects/${pid}/download`,
   previewUrl: (pid) => `/api/projects/${pid}/preview.pdf`,
+  sectionHwpxUrl: (pid, nid) => `/api/projects/${pid}/nodes/${nid}/section.hwpx`,
   regulationsPdfUrl: (pid, nid) => `/api/projects/${pid}/nodes/${nid}/regulations.pdf`,
 };
 
@@ -616,6 +622,41 @@ async function doConvert() {
   }
 }
 
+async function downloadSectionHwpx() {
+  if (!guardNode()) return;
+  const btn = $("#btn-convert-hwpx");
+  const old = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "⏳ HWPX 변환 중…";
+  toast("HWPX 변환 중… (YAML→hwpx 복원)");
+  try {
+    const resp = await fetch(API.sectionHwpxUrl(state.pid, state.nid));
+    if (!resp.ok) {
+      let msg = String(resp.status);
+      try {
+        const j = await resp.json();
+        if (j && j.detail) msg = j.detail;
+      } catch (_) {}
+      throw new Error(msg);
+    }
+    const blob = await resp.blob();
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = href;
+    a.download = "연구개발계획서.hwpx";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(href);
+    toast("HWPX 다운로드 완료", "ok");
+  } catch (e) {
+    toast("HWPX 변환 실패: " + e.message, "err");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = old;
+  }
+}
+
 function renderConvertResult(result) {
   const box = $("#convert-result");
   box.innerHTML = "";
@@ -706,19 +747,26 @@ async function doBuild() {
 /* ------------------------------------------------------------------ */
 /* 표(엑셀형 그리드) 입력 — 8장 등 표 중심 절                          */
 /* ------------------------------------------------------------------ */
-const tablesState = { data: null, dirty: new Map() };
+// dirty: cellKey(anchorPath) → {paths, text(계산값)} · formulas: anchorPath → "=..."
+const tablesState = { data: null, dirty: new Map(), formulas: new Map(), sel: null, busy: false };
 
 async function loadTables(nid) {
   const wrap = $("#tables-editor");
   if (!nid || !state.pid) { wrap.hidden = true; return; }   // null nid 조기 차단(경쟁 방지)
   tablesState.data = null;
   tablesState.dirty.clear();
+  tablesState.formulas.clear();
+  tablesState.sel = null;
   $("#tables-grids").innerHTML = "";
   try {
-    const data = await API.getTables(state.pid, nid);
+    const [data, fres] = await Promise.all([
+      API.getTables(state.pid, nid),
+      API.getFormulas(state.pid, nid).catch(() => ({ formulas: {} })),
+    ]);
     if (state.nid !== nid) return;                          // 스테일 응답 무시(다른 절로 이동)
     if (!data.has_tables) { wrap.hidden = true; return; }
     tablesState.data = data;
+    Object.entries(fres.formulas || {}).forEach(([k, v]) => tablesState.formulas.set(k, v));
     wrap.hidden = false;
     $("#btn-tables-xlsx").href = API.tablesXlsxUrl(state.pid, nid);
     renderTables(data);
@@ -727,11 +775,111 @@ async function loadTables(nid) {
   }
 }
 
+/* ---- 수식 엔진 (엑셀식: =SUM(A1:A5), =A1+B2*2) ---- */
+const colToIdx = (s) => { let n = 0; for (const ch of s.toUpperCase()) n = n * 26 + (ch.charCodeAt(0) - 64); return n - 1; };
+const numOf = (v) => { const m = String(v == null ? "" : v).replace(/[,\s₩%]/g, "").match(/-?\d+(\.\d+)?/); return m ? parseFloat(m[0]) : 0; };
+
+function tablePosIndex(t) {
+  // "r,c"(병합 커버 포함) → anchor cell
+  const pos = new Map();
+  t.cells.forEach((c) => {
+    for (let dr = 0; dr < (c.rowspan || 1); dr++)
+      for (let dc = 0; dc < (c.colspan || 1); dc++)
+        pos.set((c.row + dr) + "," + (c.col + dc), c);
+  });
+  return pos;
+}
+
+function computeTable(t) {
+  // 반환: anchorPath → 표시값(수식이면 계산값). 여러 패스로 의존 수식 해소.
+  const pos = tablePosIndex(t);
+  const val = new Map(); // anchorPath → 표시문자열
+  const anchorAt = (r, c) => pos.get(r + "," + c);
+  t.cells.forEach((c) => {
+    const ap = c.paths[0];
+    const f = tablesState.formulas.get(ap);
+    val.set(ap, f ? "" : (c.text || ""));
+  });
+  const cellVal = (r, c) => { const a = anchorAt(r, c); return a ? val.get(a.paths[0]) : ""; };
+  const rangeCells = (rng) => {
+    const m = rng.match(/([A-Z]+)(\d+):([A-Z]+)(\d+)/i);
+    if (!m) { const s = rng.match(/([A-Z]+)(\d+)/i); return s ? [[+s[2] - 1, colToIdx(s[1])]] : []; }
+    const r1 = +m[2] - 1, c1 = colToIdx(m[1]), r2 = +m[4] - 1, c2 = colToIdx(m[3]);
+    const out = [], seen = new Set();
+    for (let r = Math.min(r1, r2); r <= Math.max(r1, r2); r++)
+      for (let c = Math.min(c1, c2); c <= Math.max(c1, c2); c++) {
+        const a = anchorAt(r, c); if (!a) continue;
+        if (seen.has(a.paths[0])) continue; seen.add(a.paths[0]); out.push([r, c]);
+      }
+    return out;
+  };
+  const evalF = (expr) => {
+    let e = expr.slice(1);
+    e = e.replace(/SUM\(([^)]*)\)/gi, (_m, rng) => rangeCells(rng).reduce((s, [r, c]) => s + numOf(cellVal(r, c)), 0));
+    e = e.replace(/AVERAGE\(([^)]*)\)/gi, (_m, rng) => { const cs = rangeCells(rng); return cs.length ? cs.reduce((s, [r, c]) => s + numOf(cellVal(r, c)), 0) / cs.length : 0; });
+    e = e.replace(/([A-Z]+)(\d+)/g, (_m, col, row) => numOf(cellVal(+row - 1, colToIdx(col))));
+    if (!/^[-+*/().\d\s.eE]*$/.test(e)) return "#ERR";
+    try { const v = Function('"use strict";return (' + e + ")")(); return Number.isFinite(v) ? String(v) : "#ERR"; } catch (_) { return "#ERR"; }
+  };
+  for (let pass = 0; pass < 6; pass++) {
+    let changed = false;
+    t.cells.forEach((c) => {
+      const ap = c.paths[0], f = tablesState.formulas.get(ap);
+      if (!f) return;
+      const nv = evalF(f);
+      if (nv !== val.get(ap)) { val.set(ap, nv); changed = true; }
+    });
+    if (!changed) break;
+  }
+  return val;
+}
+
+function recalc(ti) {
+  const t = tablesState.data.tables[ti];
+  const val = computeTable(t);
+  // 수식 셀 표시 갱신 + dirty(계산값) 반영
+  $$(`#tables-grids td[data-ti="${ti}"]`).forEach((td) => {
+    const ap = td.dataset.anchor;
+    if (tablesState.formulas.has(ap) && document.activeElement !== td) {
+      const v = val.get(ap) || "";
+      td.textContent = v;
+      td.classList.add("has-formula");
+      markDirty(td, v);
+    } else if (!tablesState.formulas.has(ap)) {
+      td.classList.remove("has-formula");
+    }
+  });
+}
+
+function markDirty(td, computedText) {
+  const orig = td.dataset.orig || "";
+  const val = computedText != null ? computedText : td.innerText.replace(/\n$/, "");
+  const k = td.dataset.anchor;
+  const hasF = tablesState.formulas.has(k);
+  if (!hasF && val === orig) tablesState.dirty.delete(k);
+  else tablesState.dirty.set(k, { paths: JSON.parse(td.dataset.paths), text: val });
+  const n = tablesState.dirty.size;
+  $("#btn-tables-save").textContent = n ? `표 저장 (${n})` : "표 저장";
+}
+
 function renderTables(data) {
   const host = $("#tables-grids");
   host.innerHTML = "";
   data.tables.forEach((t, ti) => {
-    host.appendChild(el("div", { class: "grid-cap", text: `표 ${ti + 1} · ${t.rows}행 × ${t.cols}열` }));
+    // 표별 툴바(행/열 추가·삭제)
+    const bar = el("div", { class: "grid-cap" }, [
+      el("span", { text: `표 ${ti + 1} · ${t.rows}행 × ${t.cols}열 · 셀에 =SUM(A1:A5) 등 수식 가능` }),
+    ]);
+    const ops = el("span", { class: "grid-ops" });
+    const mkbtn = (label, op) => {
+      const b = el("button", { class: "btn btn-secondary grid-op", text: label });
+      b.addEventListener("click", () => structOp(op, ti));
+      return b;
+    };
+    ops.append(mkbtn("＋행", "add_row"), mkbtn("－행", "del_row"), mkbtn("＋열", "add_col"), mkbtn("－열", "del_col"));
+    bar.appendChild(ops);
+    host.appendChild(bar);
+
     const cmap = new Map();
     t.cells.forEach((c) => cmap.set(c.row + "," + c.col, c));
     const covered = new Set();
@@ -744,24 +892,30 @@ function renderTables(data) {
     for (let r = 0; r < t.rows; r++) {
       const tr = el("tr");
       for (let c = 0; c < t.cols; c++) {
-        const key = r + "," + c;
-        if (covered.has(key)) continue;
-        const cell = cmap.get(key);
+        if (covered.has(r + "," + c)) continue;
+        const cell = cmap.get(r + "," + c);
         const td = el("td", { class: r === 0 ? "hd" : "" });
         if (cell) {
           if ((cell.rowspan || 1) > 1) td.rowSpan = cell.rowspan;
           if ((cell.colspan || 1) > 1) td.colSpan = cell.colspan;
+          const ap = cell.paths[0];
           td.contentEditable = "true";
+          td.dataset.ti = ti; td.dataset.row = cell.row; td.dataset.col = cell.col;
+          td.dataset.anchor = ap; td.dataset.paths = JSON.stringify(cell.paths);
+          td.dataset.orig = cell.text || "";
           td.textContent = cell.text || "";
-          const paths = cell.paths;
-          const orig = cell.text || "";
-          td.addEventListener("input", () => {
-            const val = td.innerText.replace(/\n$/, "");
-            const k = ti + ":" + key;
-            if (val === orig) tablesState.dirty.delete(k);
-            else tablesState.dirty.set(k, { paths, text: val });
-            const n = tablesState.dirty.size;
-            $("#btn-tables-save").textContent = n ? `표 저장 (${n})` : "표 저장";
+          if (tablesState.formulas.has(ap)) td.classList.add("has-formula");
+          td.addEventListener("focus", () => {
+            tablesState.sel = { ti, row: cell.row, col: cell.col };
+            const f = tablesState.formulas.get(ap);
+            if (f) td.textContent = f;                       // 편집 시 수식 노출
+          });
+          td.addEventListener("blur", () => {
+            const val = td.innerText.replace(/\n$/, "").trim();
+            if (val.startsWith("=")) tablesState.formulas.set(ap, val);
+            else { tablesState.formulas.delete(ap); td.dataset.orig = td.dataset.orig; }
+            if (!val.startsWith("=")) markDirty(td, val);
+            recalc(ti);                                      // 의존 수식 갱신
           });
           td.addEventListener("keydown", gridKeydown);
         } else {
@@ -774,32 +928,57 @@ function renderTables(data) {
     const scroll = el("div", { class: "grid-scroll" });
     scroll.appendChild(table);
     host.appendChild(scroll);
+    recalc(ti);   // 초기 수식 계산
   });
-  $("#btn-tables-save").textContent = "표 저장";
+  $("#btn-tables-save").textContent = tablesState.dirty.size ? `표 저장 (${tablesState.dirty.size})` : "표 저장";
 }
 
 function gridKeydown(e) {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
-    const td = e.target;
-    const tr = td.parentElement;
+    const td = e.target, tr = td.parentElement;
     const idx = Array.from(tr.children).indexOf(td);
     const nextRow = tr.nextElementSibling;
     if (nextRow && nextRow.children[idx]) nextRow.children[idx].focus();
   }
 }
 
-async function saveTables() {
+async function structOp(op, ti) {
+  if (tablesState.busy) return;
+  const sel = tablesState.sel;
+  const t = tablesState.data.tables[ti];
+  const isRow = op.endsWith("row");
+  const idx = sel && sel.ti === ti ? (isRow ? sel.row : sel.col) : (isRow ? t.rows - 1 : t.cols - 1);
+  const what = { add_row: "행 추가", del_row: "행 삭제", add_col: "열 추가", del_col: "열 삭제" }[op];
+  if (!confirm(`표 ${ti + 1}: ${isRow ? idx + 1 + "행" : idx + 1 + "열"} 기준 ${what}?\n(문서 구조를 바꿔 다소 시간이 걸립니다)`)) return;
+  tablesState.busy = true;
+  toast(`${what} 처리 중… (구조 변경, 수십 초 걸릴 수 있음)`);
+  try {
+    // 변경 전 현재 편집분 저장(구조편집은 yaml 재추출로 좌표가 바뀌므로)
+    if (tablesState.dirty.size) await saveTables(true);
+    await API.tableStructure(state.pid, state.nid, op, t.path, idx);
+    await loadTables(state.nid);
+    toast(`${what} 완료.`, "ok");
+  } catch (e) {
+    toast(`${what} 실패: ${e.message}`, "err");
+  } finally {
+    tablesState.busy = false;
+  }
+}
+
+async function saveTables(silent) {
   if (!state.pid || !state.nid) return;
   const cells = Array.from(tablesState.dirty.values());
-  if (!cells.length) { toast("변경된 셀이 없습니다.", ""); return; }
+  const formulas = Object.fromEntries(tablesState.formulas);
   try {
-    const st = await API.putTables(state.pid, state.nid, cells);
+    if (cells.length) await API.putTables(state.pid, state.nid, cells);
+    await API.putFormulas(state.pid, state.nid, formulas);
     tablesState.dirty.clear();
     $("#btn-tables-save").textContent = "표 저장";
-    toast(`표 저장됨 (${st.updated}개). [hwpx 빌드]로 표에 반영됩니다.`, "ok");
+    if (!silent) toast(`표 저장됨 (${cells.length}셀). [hwpx 빌드]로 표에 반영됩니다.`, "ok");
   } catch (e) {
-    toast("표 저장 실패: " + e.message, "err");
+    if (!silent) toast("표 저장 실패: " + e.message, "err");
+    else throw e;
   }
 }
 
@@ -836,6 +1015,7 @@ function bindEvents() {
   });
   $("#btn-input-save").addEventListener("click", saveInput);
   $("#btn-convert").addEventListener("click", doConvert);
+  $("#btn-convert-hwpx").addEventListener("click", downloadSectionHwpx);
   $("#btn-reg-pdf").addEventListener("click", openRegulationsPdf);
 
   $("#btn-chat-send").addEventListener("click", sendChat);

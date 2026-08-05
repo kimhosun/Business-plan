@@ -494,3 +494,10 @@ table.xls-grid td:focus {
 table.xls-grid td.hd { background: var(--chapter-bg); font-weight: 700; text-align: center; }
 table.xls-grid td.empty { background: #fafbfc; }
 .tables-sep { border: none; border-top: 1px dashed var(--border); margin: 16px 0 12px; }
+
+/* 그리드 툴바 / 수식 셀 */
+.grid-cap { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.grid-ops { display: inline-flex; gap: 5px; }
+.grid-op { padding: 3px 9px !important; font-size: 12px !important; }
+table.xls-grid td.has-formula { background: #f3f9f1; color: #15803d; font-weight: 600; }
+table.xls-grid td.has-formula::after { content: " ƒ"; font-size: 9px; color: #86b986; }
