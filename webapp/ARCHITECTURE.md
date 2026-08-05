@@ -10,7 +10,8 @@ hwpx에서 뽑은 세부 항목을 **왼쪽 트리 메뉴(1, 1.1 …)** 로 고�
 - 백엔드: **FastAPI + uvicorn** (파이프라인이 파이썬이라 직결)
 - 프론트: 정적 **2열 SPA**(바닐라 JS/HTML/CSS), FastAPI가 `/`로 서빙
 - 저장: **파일 기반**(결과가 곧 hwpx 반영값 YAML이라 파이프라인과 동일 소스)
-- Claude: `anthropic` SDK, `ANTHROPIC_API_KEY` 있으면 실호출·없으면 **결정론적 스텁**
+- Claude: `ANTHROPIC_API_KEY` 있으면 `anthropic` SDK → 없으면 **`claude` 실행파일**
+  (Claude Code CLI 헤드리스 `claude -p`, 키 없이 로그인 자격증명 사용) → 둘 다 안 되면 **결정론적 스텁**
 - 구동: `cd webapp && uvicorn backend.main:app --reload` → http://127.0.0.1:8000
 
 ## 재사용 자산(이미 존재·검증됨)
@@ -34,6 +35,7 @@ webapp/data/projects/<pid>/
     prompts.json       # {"style": "...", "structure": "...", "guidelines": [...]}
     input.md           # 사용자 원문 입력
     result.yaml        # 변환결과 = [{path,marker,text}] (yaml/에 반영된 값)
+    chat.json          # 작성 채팅 이력 [{role,content,at}]
   output/final.hwpx    # 빌드 산출물
   output/preview.pdf   # 미리보기
 ```
@@ -48,8 +50,18 @@ webapp/data/projects/<pid>/
   `default_template_from_hwpx(pid,nid)`(해당 절의 기존 마커/번호·표 양식을 template.yaml dict로),
   `merge_result_into_yaml(pid, result)`(result의 {path,marker,text}를 yaml/section_*.yaml에 기록).
 - `backend/claude_service.py` : `generate_template(description, default_template, sample_texts) -> dict`,
-  `convert_input(input_text, template, prompts, targets) -> list[{path,marker,text}]`.
-  실키 없으면 스텁(입력을 문단분할→template 마커 적용→targets에 순서대로 매핑).
+  `convert_input(input_text, template, prompts, targets) -> list[{path,marker,text}]`,
+  `chat_write(context, history, message) -> {reply, draft}`(절 맥락 대화로 본문 초안 작성).
+  호출은 `_ask()` 하나로 모이며 **API 키 → `claude` 실행파일(`_find_cli`/`_cli_text`) → 스텁** 순 폴백.
+  CLI 는 `--system-prompt` 로 시스템 프롬프트를 교체하고 도구를 모두 막아 순수 생성기로 쓴다.
+  스텁으로 떨어지면 답변에 `(스텁 모드)` 와 사유가 남는다.
+- `backend/presets.py` : 절별 '작성 프롬프트' 프리셋 조립(rnd-proposal-writer `_지침/지침.json` 단일 원천).
+  `preset_for(nid)`, `file_for(nid)`(절→원본 md 파일명), `skill_for(nid)`.
+- `backend/regulations.py` : 절별 '작성 규정' 묶음 + PDF. `regulation_for(nid, node)` 는
+  서식 ※작성요령(node.guidelines), 절 지침(골격/변형/문체), 체크리스트, 참조 공통원칙 §,
+  공통원칙 §0~§9 요약, 심화 지침, **출처 경로(원본 md·지침 md·지침.json·sha256)** 를 모으고,
+  `build_pdf(reg, out, project_ctx)` 가 reportlab(맑은 고딕/나눔고딕)으로 A4 PDF 를 렌더한다.
+  출처 부록이 있어 UI ② 프롬프트 칸의 요약 문구를 나중에 원본과 대조할 수 있다.
 - `backend/schemas.py` : pydantic 모델(요청/응답).
 - `backend/main.py` : FastAPI 앱 + 라우트 + 정적 프론트 마운트.
 - `frontend/index.html, app.js, styles.css` : 2열 UI.
@@ -66,7 +78,11 @@ webapp/data/projects/<pid>/
 | POST | `/api/projects/{pid}/nodes/{nid}/template/generate` | body `{description}` → Claude 생성→저장→반환 |
 | PUT  | `/api/projects/{pid}/nodes/{nid}/prompts` | body `{style,structure}` 저장 |
 | PUT  | `/api/projects/{pid}/nodes/{nid}/input` | body `{input}` 저장 |
+| POST | `/api/projects/{pid}/nodes/{nid}/chat` | body `{message,apply}` → Claude 가 절 맥락(양식·작성요령·문체·현재 본문)으로 답변+본문 초안 생성. apply면 input.md 반영 → `{reply,draft,input,chat}` |
+| DELETE | `/api/projects/{pid}/nodes/{nid}/chat` | 채팅 이력 초기화(본문 유지) → `{chat}` |
 | POST | `/api/projects/{pid}/nodes/{nid}/convert` | Claude 변환→result.yaml 저장+yaml/ 병합 → `{result:[{path,before,after,marker}]}` |
+| GET  | `/api/regulations/{nid}` | 절 nid 작성 규정(구조화 JSON) + 원본 확인 경로 |
+| GET  | `/api/projects/{pid}/nodes/{nid}/regulations.pdf` | 절 nid 작성 규정 PDF(inline). output/regulations_{nid}.pdf 로 생성 |
 | POST | `/api/projects/{pid}/build` | yaml2hwpx restore → final.hwpx(+pdf) → `{download,preview}` |
 | GET  | `/api/projects/{pid}/download` | final.hwpx 파일 |
 | GET  | `/api/projects/{pid}/preview.pdf` | preview.pdf 파일 |
@@ -79,10 +95,11 @@ webapp/data/projects/<pid>/
 ## UI 요구(프론트)
 
 - 좌: 접기/펼치기 트리. 장 "1", 절 "1.1" 라벨. 클릭 시 노드 로드.
-- 우: 제목 + 가이드(※) 박스, 그리고 4개 패널
+- 우: 제목 + **우측 상단 [📕 작성 규정 PDF]**(그 절의 규정을 새 탭에 PDF 로) + 가이드(※) 박스, 그리고 4개 패널
   1. **양식 템플릿**: template.yaml 텍스트에디터 + "AI로 양식 생성"(설명 입력→generate) + 저장
   2. **작성 프롬프트**: style/structure textarea(기본 가이드 프리필) + 저장
-  3. **입력**: 사용자 원문 textarea + 저장
+  3. **입력**: 사용자 원문 textarea + 저장, 하단에 **작성 채팅**(Claude) —
+     아래에 지시를 쓰면 위 본문을 양식·문체대로 다시 써서 반영(자동 반영 토글·대화 초기화)
   4. **변환**: 버튼 → 변환결과 before/after 리스트 표시
 - 상단바: [hwpx 빌드] → 완료 시 다운로드 링크 + PDF 미리보기 링크.
 - fetch 로 API 호출, 한국어 라벨, 반응형 2열(모바일은 세로 스택).

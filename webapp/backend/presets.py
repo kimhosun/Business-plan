@@ -88,6 +88,18 @@ def _file_for(nid: str) -> str | None:
     return None
 
 
+def file_for(nid: str) -> str | None:
+    """절 nid 에 대응하는 지침 원본 md 파일명(없으면 None). regulations 와 공용."""
+    return _file_for(nid)
+
+
+def skill_for(nid: str) -> str:
+    """절 nid 의 rnd-write-* 스킬명(지침에 비어 있으면 토큰 매핑으로 보정)."""
+    fn = _file_for(nid)
+    node = _guide().get("files", {}).get(fn, {}) if fn else {}
+    return node.get("skill", "") or _SKILL_BY_TOKEN.get(_token_of(fn), "")
+
+
 @lru_cache(maxsize=1)
 def _common_style() -> str:
     secs = _guide().get("common_principles", {}).get("sections", [])

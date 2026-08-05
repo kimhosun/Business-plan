@@ -90,10 +90,14 @@ const API = {
     api(`/api/projects/${pid}/nodes/${nid}/prompts`, jsonBody({ style, structure })),
   getPreset: (nid) => api(`/api/presets/${nid}`),
   putInput: (pid, nid, input) => api(`/api/projects/${pid}/nodes/${nid}/input`, jsonBody({ input })),
+  chat: (pid, nid, message, apply) =>
+    api(`/api/projects/${pid}/nodes/${nid}/chat`, postJson({ message, apply })),
+  clearChat: (pid, nid) => api(`/api/projects/${pid}/nodes/${nid}/chat`, { method: "DELETE" }),
   convert: (pid, nid) => api(`/api/projects/${pid}/nodes/${nid}/convert`, postJson({})),
   build: (pid) => api(`/api/projects/${pid}/build`, postJson({})),
   downloadUrl: (pid) => `/api/projects/${pid}/download`,
   previewUrl: (pid) => `/api/projects/${pid}/preview.pdf`,
+  regulationsPdfUrl: (pid, nid) => `/api/projects/${pid}/nodes/${nid}/regulations.pdf`,
 };
 
 /* ------------------------------------------------------------------ */
@@ -402,8 +406,10 @@ function renderNode(node) {
     origin.textContent = skill ? `참조 스킬: ${skill}` : "참조 프리셋 없음";
   }
 
-  // 3) 입력
+  // 3) 입력 + 작성 채팅 이력
   $("#input-text").value = node.input || "";
+  $("#chat-input").value = "";
+  renderChat(node.chat);
 
   // 4) 변환 결과 (기존 result 표시)
   renderConvertResult(node.result);
@@ -508,6 +514,84 @@ async function saveInput() {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* 작성 채팅 (입력 패널 하단)                                          */
+/* ------------------------------------------------------------------ */
+function renderChat(chat) {
+  const box = $("#chat-log");
+  box.innerHTML = "";
+  if (!chat || !chat.length) {
+    box.appendChild(
+      el("p", {
+        class: "placeholder",
+        text: "양식·작성요령·문체를 참고해 위 본문을 대신 써 드립니다. 재료나 수정 지시를 적어 보세요.",
+      })
+    );
+    return;
+  }
+  chat.forEach((turn) => {
+    box.appendChild(
+      el("div", { class: "chat-msg chat-" + (turn.role === "user" ? "user" : "ai") }, [
+        el("span", { class: "chat-role", text: turn.role === "user" ? "나" : "AI" }),
+        el("div", { class: "chat-text", text: turn.content || "" }),
+      ])
+    );
+  });
+  box.scrollTop = box.scrollHeight;
+}
+
+async function sendChat() {
+  if (!guardNode()) return;
+  const field = $("#chat-input");
+  const message = field.value.trim();
+  if (!message) {
+    toast("보낼 내용을 입력하세요.", "err");
+    return;
+  }
+  const btn = $("#btn-chat-send");
+  btn.disabled = true;
+  field.disabled = true;
+  // 낙관적 표시: 내 말풍선을 먼저 붙이고 답변을 기다린다.
+  const pending = (state.node && state.node.chat ? state.node.chat.slice() : []).concat([
+    { role: "user", content: message },
+    { role: "assistant", content: "작성 중… (양식·문체를 반영해 다시 쓰는 중이라 30초~1분 걸릴 수 있습니다)" },
+  ]);
+  renderChat(pending);
+  try {
+    const apply = $("#chat-apply").checked;
+    const res = await API.chat(state.pid, state.nid, message, apply);
+    renderChat(res.chat);
+    field.value = "";
+    if (state.node) state.node.chat = res.chat;
+    if (apply && res.draft != null) {
+      $("#input-text").value = res.input || "";
+      if (state.node) state.node.input = res.input || "";
+      toast("본문을 다시 써서 입력에 반영했습니다.", "ok");
+    } else {
+      toast("답변이 도착했습니다.", "ok");
+    }
+  } catch (e) {
+    renderChat(state.node ? state.node.chat : []);
+    toast("채팅 실패: " + e.message, "err");
+  } finally {
+    btn.disabled = false;
+    field.disabled = false;
+    field.focus();
+  }
+}
+
+async function clearChat() {
+  if (!guardNode()) return;
+  try {
+    const res = await API.clearChat(state.pid, state.nid);
+    if (state.node) state.node.chat = res.chat || [];
+    renderChat(res.chat);
+    toast("대화를 초기화했습니다(본문은 그대로).", "ok");
+  } catch (e) {
+    toast("초기화 실패: " + e.message, "err");
+  }
+}
+
 async function doConvert() {
   if (!guardNode()) return;
   const btn = $("#btn-convert");
@@ -546,6 +630,41 @@ function renderConvertResult(result) {
     const row = el("div", { class: "diff-row" }, [el("div", { class: "diff-path", text: r.path || "" }), rowCols]);
     box.appendChild(row);
   });
+}
+
+/* ------------------------------------------------------------------ */
+/* 작성 규정 PDF (노드 헤더 우측)                                       */
+/* ------------------------------------------------------------------ */
+async function openRegulationsPdf() {
+  if (!guardNode()) return;
+  const btn = $("#btn-reg-pdf");
+  // 팝업 차단 회피: 클릭 즉시 탭을 열고, 받은 PDF 를 그 탭에 실어준다.
+  const win = window.open("", "_blank");
+  btn.disabled = true;
+  toast("작성 규정 PDF 생성 중…");
+  try {
+    const res = await fetch(API.regulationsPdfUrl(state.pid, state.nid));
+    if (!res.ok) {
+      let detail = res.status + " " + res.statusText;
+      try {
+        const body = await res.json();
+        if (body && body.detail) detail = body.detail;
+      } catch (_) {
+        /* non-json error */
+      }
+      throw new Error(detail);
+    }
+    const url = URL.createObjectURL(await res.blob());
+    if (win) win.location = url;
+    else window.open(url, "_blank"); // 팝업이 막힌 경우 재시도
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    toast("작성 규정 PDF 를 열었습니다.", "ok");
+  } catch (e) {
+    if (win) win.close();
+    toast("규정 PDF 생성 실패: " + e.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -592,6 +711,17 @@ function bindEvents() {
   $("#btn-preset-load").addEventListener("click", loadPreset);
   $("#btn-input-save").addEventListener("click", saveInput);
   $("#btn-convert").addEventListener("click", doConvert);
+  $("#btn-reg-pdf").addEventListener("click", openRegulationsPdf);
+
+  $("#btn-chat-send").addEventListener("click", sendChat);
+  $("#btn-chat-clear").addEventListener("click", clearChat);
+  $("#chat-input").addEventListener("keydown", (ev) => {
+    // Enter 전송 / Shift+Enter 줄바꿈 (IME 조합 중에는 무시)
+    if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
+      ev.preventDefault();
+      sendChat();
+    }
+  });
 }
 
 async function boot() {

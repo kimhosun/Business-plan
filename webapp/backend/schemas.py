@@ -44,6 +44,15 @@ class InputBody(_Base):
     input: str = ""
 
 
+class ChatBody(_Base):
+    """POST .../chat — {message, apply}
+
+    apply=True(기본)면 모델이 낸 draft 를 그 절의 input.md 에 그대로 반영한다.
+    """
+    message: str = ""
+    apply: bool = True
+
+
 # ── 응답 모델 ────────────────────────────────────────────────────────────────
 class ProjectInfo(_Base):
     """GET /api/projects 목록 항목."""
@@ -66,6 +75,7 @@ class NodeDetail(_Base):
     prompts: dict[str, Any] = Field(default_factory=dict)
     input: str = ""
     result: list[dict[str, Any]] = Field(default_factory=list)
+    chat: list[dict[str, Any]] = Field(default_factory=list)
     node_count: int = 0
 
 

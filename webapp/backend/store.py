@@ -12,6 +12,7 @@
       prompts.json         # {style,structure,guidelines}
       input.md             # 사용자 원문
       result.yaml          # [{path,marker,text}]
+      chat.json            # 작성 채팅 이력 [{role,content,at}]
     output/final.hwpx, output/preview.pdf
 
 파일 IO 는 모두 UTF-8. YAML 은 allow_unicode=True, sort_keys=False.
@@ -222,6 +223,10 @@ def _result_path(pid: str, nid: str) -> Path:
     return node_dir(pid, nid) / "result.yaml"
 
 
+def _chat_path(pid: str, nid: str) -> Path:
+    return node_dir(pid, nid) / "chat.json"
+
+
 # ── 노드 읽기(기본값 생성) ────────────────────────────────────────────────────
 def read_node(pid: str, nid: str) -> dict:
     """노드 상세를 반환. 없는 값은 기본값을 만들어 저장한 뒤 반환한다.
@@ -274,9 +279,15 @@ def read_node(pid: str, nid: str) -> dict:
         "prompts": prompts,
         "input": input_text,
         "result": result,
+        "chat": read_chat(pid, nid),
         "node_count": len(node_paths),
         "preset": preset,
     }
+
+
+def read_chat(pid: str, nid: str) -> list[dict]:
+    """작성 채팅 이력 [{role, content, at}] (없으면 [])."""
+    return _read_json(_chat_path(pid, nid), default=[]) or []
 
 
 # ── 노드 쓰기 ────────────────────────────────────────────────────────────────
@@ -303,6 +314,19 @@ def write_input(pid: str, nid: str, input_text: str) -> str:
 def write_result(pid: str, nid: str, result: list[dict]) -> list[dict]:
     _write_yaml(_result_path(pid, nid), result or [])
     return result or []
+
+
+def append_chat(pid: str, nid: str, role: str, content: str) -> list[dict]:
+    """채팅 한 턴을 이력 끝에 붙이고 전체 이력을 반환."""
+    chat = read_chat(pid, nid)
+    chat.append({"role": role, "content": content or "", "at": _now()})
+    _write_json(_chat_path(pid, nid), chat)
+    return chat
+
+
+def clear_chat(pid: str, nid: str) -> list[dict]:
+    _write_json(_chat_path(pid, nid), [])
+    return []
 
 
 # ── __main__ 스모크 테스트 ────────────────────────────────────────────────────

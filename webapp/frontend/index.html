@@ -46,8 +46,14 @@
 
       <div id="node-view" class="node-view hidden">
         <div class="node-head">
-          <h2 id="node-title" class="node-title"></h2>
-          <span id="node-meta" class="node-meta"></span>
+          <div class="node-head-main">
+            <h2 id="node-title" class="node-title"></h2>
+            <span id="node-meta" class="node-meta"></span>
+          </div>
+          <button id="btn-reg-pdf" class="btn btn-secondary btn-reg"
+                  title="이 절을 작성할 때 적용할 규정(서식 ※작성요령·골격·문체·공통원칙·체크리스트)을 PDF 로 엽니다. 부록에 원본 확인 경로가 있습니다.">
+            📕 작성 규정 PDF
+          </button>
         </div>
 
         <div id="guidelines-box" class="guidelines-box hidden">
@@ -99,10 +105,31 @@
         <!-- 3. 입력 -->
         <div class="panel" data-panel="input">
           <label class="field-label" for="input-text">사용자 원문 입력</label>
-          <textarea id="input-text" rows="16"
-                    placeholder="변환할 원문을 입력하세요."></textarea>
+          <textarea id="input-text" rows="14"
+                    placeholder="변환할 원문을 입력하세요. 아래 채팅으로 AI에게 작성을 맡길 수도 있습니다."></textarea>
           <div class="row">
             <button id="btn-input-save" class="btn btn-primary">저장</button>
+            <span class="hint">아래 채팅에서 지시하면 이 칸의 본문을 AI가 다시 씁니다.</span>
+          </div>
+
+          <!-- 작성 채팅 (Claude) -->
+          <div class="chat-box">
+            <div class="chat-head">
+              <span>AI와 대화하며 작성</span>
+              <button id="btn-chat-clear" class="btn-icon" title="대화 초기화">🗑</button>
+            </div>
+            <div id="chat-log" class="chat-log">
+              <p class="placeholder">양식·작성요령·문체를 참고해 위 본문을 대신 써 드립니다. 재료나 수정 지시를 적어 보세요.</p>
+            </div>
+            <div class="chat-input-row">
+              <textarea id="chat-input" rows="2"
+                        placeholder="예) 우리 과제는 LCO2 탱크 단열재 국산화다. 1-1 개요를 이 양식대로 써줘. (Enter 전송 · Shift+Enter 줄바꿈)"></textarea>
+              <button id="btn-chat-send" class="btn btn-primary">전송</button>
+            </div>
+            <label class="chat-apply">
+              <input type="checkbox" id="chat-apply" checked />
+              답변을 위 입력칸에 자동 반영·저장
+            </label>
           </div>
         </div>
 

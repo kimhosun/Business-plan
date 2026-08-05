@@ -18,8 +18,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import claude_service, config, pipeline, presets, store
+from . import claude_service, config, pipeline, presets, regulations, store
 from .schemas import (
+    ChatBody,
     GenerateBody,
     InputBody,
     PromptsBody,
@@ -144,7 +145,7 @@ async def put_template(pid: str, nid: str, body: TemplateBody):
 
 
 @app.post("/api/projects/{pid}/nodes/{nid}/template/generate")
-async def generate_template(pid: str, nid: str, body: GenerateBody):
+def generate_template(pid: str, nid: str, body: GenerateBody):
     _require_project(pid)
     node = _node_or_404(pid, nid)
     try:
@@ -175,6 +176,39 @@ async def get_preset(nid: str):
     return presets.preset_for(nid)
 
 
+@app.get("/api/regulations/{nid}")
+async def get_regulation(nid: str):
+    """절 nid 에 적용되는 작성 규정(구조화 JSON) + 원본 확인 경로."""
+    return regulations.regulation_for(nid)
+
+
+@app.get("/api/projects/{pid}/nodes/{nid}/regulations.pdf")
+async def regulations_pdf(pid: str, nid: str):
+    """이 절을 쓸 때 적용할 규정을 한 장의 PDF 로. 브라우저에서 바로 열린다."""
+    meta = _require_project(pid)
+    node = _node_or_404(pid, nid)
+    try:
+        reg = regulations.regulation_for(nid, node)
+        ctx = {
+            "source_hwpx": meta.get("source_hwpx")
+            or str(store.project_dir(pid) / "source.hwpx"),
+            "yaml_dir": str(store.yaml_dir(pid)),
+            "node_dir": str(store.node_dir(pid, nid)),
+            "node_paths": list(node.get("node_paths", []) or []),
+        }
+        out = store.output_dir(pid) / f"regulations_{nid}.pdf"
+        regulations.build_pdf(reg, out, ctx)
+    except RuntimeError as exc:  # 한글 폰트 없음 등
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"규정 PDF 생성 실패: {exc}") from exc
+    return FileResponse(
+        str(out),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="regulations_{nid}.pdf"'},
+    )
+
+
 @app.put("/api/projects/{pid}/nodes/{nid}/input")
 async def put_input(pid: str, nid: str, body: InputBody):
     _require_project(pid)
@@ -183,8 +217,61 @@ async def put_input(pid: str, nid: str, body: InputBody):
     return {"input": body.input or ""}
 
 
+@app.post("/api/projects/{pid}/nodes/{nid}/chat")
+def chat_node(pid: str, nid: str, body: ChatBody):
+    """작성 채팅 한 턴. Claude 가 답변(reply)과 본문 초안(draft)을 낸다.
+
+    apply=True 면 draft 를 input.md 에 반영해 갱신된 input 을 함께 돌려준다.
+    → {reply, draft, input, chat}
+
+    claude 실행파일(subprocess) 경로가 수십 초 블로킹이라 sync 라우트로 둔다
+    (FastAPI 가 스레드풀에서 실행 → 이벤트 루프를 막지 않음).
+    """
+    _require_project(pid)
+    _node_or_404(pid, nid)
+    message = (body.message or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message 가 비어 있습니다.")
+    try:
+        detail = store.read_node(pid, nid)
+        context = {
+            "label": detail.get("label", ""),
+            "title": detail.get("title", ""),
+            "guidelines": detail.get("guidelines") or [],
+            "template": detail.get("template") or {},
+            "prompts": detail.get("prompts") or {},
+            "input": detail.get("input") or "",
+        }
+        history = detail.get("chat") or []
+
+        result = claude_service.chat_write(context, history, message)
+        reply = result.get("reply") or ""
+        draft = result.get("draft")
+
+        store.append_chat(pid, nid, "user", message)
+        chat = store.append_chat(pid, nid, "assistant", reply)
+
+        input_text = context["input"]
+        if body.apply and draft is not None:
+            input_text = store.write_input(pid, nid, draft)
+
+        return {"reply": reply, "draft": draft, "input": input_text, "chat": chat}
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"채팅 실패: {exc}") from exc
+
+
+@app.delete("/api/projects/{pid}/nodes/{nid}/chat")
+async def clear_chat(pid: str, nid: str):
+    """작성 채팅 이력 초기화(입력 본문은 그대로 둔다)."""
+    _require_project(pid)
+    _node_or_404(pid, nid)
+    return {"chat": store.clear_chat(pid, nid)}
+
+
 @app.post("/api/projects/{pid}/nodes/{nid}/convert")
-async def convert_node(pid: str, nid: str):
+def convert_node(pid: str, nid: str):
     """Claude 변환 → result.yaml 저장 + yaml/ 병합 → {result:[{path,before,after,marker}]}"""
     _require_project(pid)
     node = _node_or_404(pid, nid)
