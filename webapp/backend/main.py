@@ -176,6 +176,21 @@ async def get_preset(nid: str):
     return presets.preset_for(nid)
 
 
+@app.get("/api/reg-status")
+async def reg_status():
+    """절별 법령·규정 데이터셋 상태(기준일·건수). UI 기준일 표시용."""
+    data = regulations._regdata()
+    secs = data.get("sections", {}) or {}
+    return {
+        "as_of": data.get("as_of", ""),
+        "business": data.get("business", ""),
+        "disclaimer": data.get("disclaimer", ""),
+        "common_count": len(data.get("common", []) or []),
+        "section_count": len(secs),
+        "law_count": sum(len(s.get("regulations", []) or []) for s in secs.values()),
+    }
+
+
 @app.get("/api/regulations/{nid}")
 async def get_regulation(nid: str):
     """절 nid 에 적용되는 작성 규정(구조화 JSON) + 원본 확인 경로."""

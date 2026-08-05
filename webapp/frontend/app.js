@@ -724,8 +724,22 @@ function bindEvents() {
   });
 }
 
+async function loadRegStatus() {
+  // 절별 법령·규정 데이터셋 기준일을 📕 버튼 툴팁에 반영
+  try {
+    const s = await api("/api/reg-status");
+    const btn = $("#btn-reg-pdf");
+    if (btn && s && s.as_of) {
+      btn.title =
+        `이 절 적용 법령·규정 + 작성요령을 PDF 로 엽니다.\n` +
+        `법령 기준일 ${s.as_of} · 공통 ${s.common_count}건 / 절별 ${s.law_count}건 (제출 전 최신 공고·협약과 대조 필요)`;
+    }
+  } catch (_) { /* 데이터셋 없어도 무시 */ }
+}
+
 async function boot() {
   bindEvents();
+  loadRegStatus();
   await loadProjects();
   // 프로젝트가 하나면 자동 선택
   const sel = $("#project-select");

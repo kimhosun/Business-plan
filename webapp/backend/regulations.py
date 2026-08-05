@@ -36,6 +36,9 @@ GUIDE_DIR = REF_DIR / "_지침"
 GUIDE_JSON = GUIDE_DIR / "지침.json"
 COMMON_SRC = "00_공통_작성원칙.md"
 
+# 절별 적용 법령·규정 데이터셋(웹검증 큐레이션). regulations.py 옆.
+REGDATA_JSON = Path(__file__).with_name("regulations_data.json")
+
 # 공통원칙 §번호 → 지침 파일 안 section 라벨("§1. 문체·종결형") 매칭용
 _SEC_RE = re.compile(r"^(§\d+)")
 
@@ -46,6 +49,15 @@ def _guide() -> dict:
     try:
         return json.loads(GUIDE_JSON.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001 - 지침 자산이 없어도 서비스는 살아있어야 함
+        return {}
+
+
+def _regdata() -> dict:
+    """절별 적용 법령·규정 데이터셋(웹검증 큐레이션). 매 호출 시 파일을 다시 읽어
+    재검증(refresh)으로 갱신된 최신본이 캐시 없이 반영되게 한다."""
+    try:
+        return json.loads(REGDATA_JSON.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - 데이터셋이 없어도 서비스는 살아있어야 함
         return {}
 
 
@@ -107,11 +119,22 @@ def regulation_for(nid: str, node: dict | None = None) -> dict:
     refs = [r for r in (entry.get("common_refs") or []) if _SEC_RE.match(r)]
     common_sections = guide.get("common_principles", {}).get("sections", []) or []
 
+    # 절별 적용 법령·규정(공통 + 절 특유). 데이터셋이 없으면 빈 목록.
+    regdata = _regdata()
+    sec_reg = (regdata.get("sections", {}) or {}).get(nid, {}) or {}
+    laws = list(regdata.get("common", []) or []) + list(sec_reg.get("regulations", []) or [])
+
     node = node or {}
     return {
         "nid": nid,
         "label": node.get("label", "") or nid.replace("-", "."),
         "node_title": node.get("title", ""),
+        # 적용 법령·규정(웹검증 큐레이션)
+        "laws": laws,
+        "law_notes": sec_reg.get("notes", ""),
+        "reg_as_of": regdata.get("as_of", ""),
+        "reg_business": regdata.get("business", ""),
+        "reg_disclaimer": regdata.get("disclaimer", ""),
         # 지침 원천
         "title": entry.get("title", ""),
         "skill": entry.get("skill", "") or presets.skill_for(nid),
@@ -283,15 +306,62 @@ def build_pdf(reg: dict, out_path: Path, project_ctx: dict | None = None) -> Pat
     if reg.get("role"):
         flow.append(Paragraph("<b>역할</b> — " + _rt(reg["role"]), S_NOTE))
 
+    # ── 0. 적용 법령·규정 (웹검증 큐레이션) ─────────────────────────────────
+    as_of = reg.get("reg_as_of") or ""
+    h1(f"1. 적용 법령·규정  (기준일 {as_of})" if as_of else "1. 적용 법령·규정")
+    if reg.get("reg_disclaimer"):
+        flow.append(Paragraph("⚠ " + _rt(reg["reg_disclaimer"]), S_NOTE))
+        flow.append(Spacer(1, 5))
+    if reg.get("law_notes"):
+        flow.append(Paragraph("<b>이 절 유의</b> — " + _rt(reg["law_notes"]), S_BODY))
+        flow.append(Spacer(1, 4))
+    laws = reg.get("laws") or []
+    if not laws:
+        flow.append(Paragraph(
+            _rt("이 절에 매핑된 법령·규정 데이터가 아직 없음(규정 데이터셋 미수록/미검증). "
+                "regulations_data.json 을 재검증(refresh)해 채운다."), S_NOTE))
+    for lw in laws:
+        title = (lw.get("title") or "").strip()
+        kind = (lw.get("kind") or "").strip()
+        article = (lw.get("article") or "").strip()
+        head_bits = [f"<b>{_rt(title)}</b>"]
+        if kind:
+            head_bits.append(f"({_rt(kind)})")
+        if article:
+            head_bits.append(_rt(article))
+        flow.append(Paragraph(" ".join(head_bits), S_H2))
+        if lw.get("requirement"):
+            flow.append(Paragraph(_rt(lw["requirement"]), S_BODY))
+        meta = []
+        if lw.get("authority"):
+            meta.append("소관 " + lw["authority"])
+        if lw.get("effective_date"):
+            meta.append("시행일 " + lw["effective_date"])
+        if lw.get("verified_date"):
+            meta.append("확인일 " + lw["verified_date"])
+        conf = (lw.get("confidence") or "").strip()
+        if conf:
+            meta.append("신뢰도 " + conf)
+        if meta:
+            flow.append(Paragraph(_rt(" · ".join(meta)), S_NOTE))
+        url = (lw.get("source_url") or "").strip()
+        if url:
+            safe = xml_escape(url)
+            flow.append(Paragraph(
+                f'출처 <link href="{safe}" color="#1d4ed8">{safe}</link>', S_SRC))
+        if lw.get("note"):
+            flow.append(Paragraph("비고 — " + _rt(lw["note"]), S_NOTE))
+        flow.append(Spacer(1, 7))
+
     # ── 1. 서식 자체의 작성요령(※) ─────────────────────────────────────────
-    h1("1. 서식 작성요령 (※ — 원본 hwpx 발췌)")
+    h1("2. 서식 작성요령 (※ — 원본 hwpx 발췌)")
     if reg.get("form_guidelines"):
         bullets(reg["form_guidelines"], bullet="※")
     else:
         flow.append(Paragraph(_rt("이 절의 서식에는 별도 ※ 작성요령이 없음."), S_NOTE))
 
     # ── 2. 이 절의 지침 ─────────────────────────────────────────────────────
-    h1("2. 이 절의 골격·변형·문체 지침")
+    h1("3. 이 절의 골격·변형·문체 지침")
     if reg.get("sections"):
         for sec, items in reg["sections"]:
             if sec:
@@ -302,12 +372,12 @@ def build_pdf(reg: dict, out_path: Path, project_ctx: dict | None = None) -> Pat
 
     # ── 3. 체크리스트 ───────────────────────────────────────────────────────
     if reg.get("checklist"):
-        h1("3. 제출 전 체크리스트")
+        h1("4. 제출 전 체크리스트")
         bullets(reg["checklist"], bullet="□")
 
     # ── 4. 참조 공통원칙 ────────────────────────────────────────────────────
     refs = reg.get("common_refs") or []
-    h1(f"4. 이 절이 반드시 따르는 공통원칙 ({', '.join(refs) if refs else '지정 없음'})")
+    h1(f"5. 이 절이 반드시 따르는 공통원칙 ({', '.join(refs) if refs else '지정 없음'})")
     if reg.get("common_ref_sections"):
         for sec, items in reg["common_ref_sections"]:
             if sec:
@@ -318,7 +388,7 @@ def build_pdf(reg: dict, out_path: Path, project_ctx: dict | None = None) -> Pat
 
     # ── 5. 공통원칙 전체 요약 ───────────────────────────────────────────────
     if reg.get("common_summary"):
-        h1("5. 전 절 공통 작성 원칙 §0~§9 (요약)")
+        h1("6. 전 절 공통 작성 원칙 §0~§9 (요약)")
         bullets(
             [
                 f"<b>{_rt(f'{sid} {title}')}</b> — {_rt(summary)}"
@@ -329,7 +399,7 @@ def build_pdf(reg: dict, out_path: Path, project_ctx: dict | None = None) -> Pat
 
     # ── 6. 심화 지침 ────────────────────────────────────────────────────────
     if reg.get("deep"):
-        h1("6. 심화 지침 (수동 편집 영역)")
+        h1("7. 심화 지침 (수동 편집 영역)")
         bullets(reg["deep"])
 
     # ── 7. 출처 ─────────────────────────────────────────────────────────────

@@ -46,6 +46,22 @@ uvicorn backend.main:app --reload --port 8000
 6. **변환** 패널: [변환] → 입력이 양식·문체대로 바뀌어 해당 절 노드에 매핑(before/after 표시).
 7. 상단 **[hwpx 빌드]** → `output/final.hwpx` 생성, 다운로드 + PDF 미리보기 링크.
 
+## 절별 적용 법령·규정 (작성 규정 PDF)
+
+각 절의 **📕 작성 규정 PDF** 맨 앞에 그 절에 적용되는 **법령·요령·지침**이 나온다
+(제명·조문·핵심요건·소관·시행일·확인일·**공식 출처 URL**·신뢰도). 데이터는
+`backend/regulations_data.json`(schema `rnd-regulations/1.0`) 에 큐레이션돼 있고,
+`GET /api/reg-status` 로 **기준일(as_of)** 을 확인한다.
+
+- 출처: 대부분 국가법령정보센터(law.go.kr) 현행 원문 + 소관기관 고시. 멀티에이전트가
+  기준일 현재 웹검증해 채운다(공통 + 절별 약 90여 건).
+- **항상 최신 반영**: PDF 는 매 클릭 시 `regulations_data.json` 을 다시 읽어(캐시 없음) 렌더.
+  재검증(갱신)은 `research-rnd-regulations` 워크플로를 다시 돌린 뒤
+  `python -m backend.refresh_regulations --from <fragment_dir> --as-of YYYY-MM-DD` 로 병합한다.
+  `schedule`/cron 으로 주기 실행하면 '주기적 웹검증'이 된다.
+- ⚠ **AI 웹검증 결과이며 법적 자문이 아니다.** 제출 전 담당자가 해당 세부사업의 최신
+  공고·RFP·협약과 반드시 대조해 확정해야 한다(PDF 상단에 면책·기준일·출처 표기).
+
 ## 데이터 저장(파일 기반)
 
 ```
