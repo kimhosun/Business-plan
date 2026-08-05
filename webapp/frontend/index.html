@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>연구개발계획서 작성 웹서비스</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- 상단바 -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <h1 class="app-title">연구개발계획서 작성</h1>
+    </div>
+    <div class="topbar-right">
+      <select id="project-select" class="select" title="프로젝트 선택">
+        <option value="">프로젝트 선택…</option>
+      </select>
+      <button id="btn-new-project" class="btn btn-secondary">기본 문서로 새 프로젝트</button>
+      <button id="btn-build" class="btn btn-primary" disabled>hwpx 빌드</button>
+      <span id="build-links" class="build-links hidden">
+        <a id="link-download" class="link" href="#" target="_blank" rel="noopener">⬇ hwpx 다운로드</a>
+        <a id="link-preview" class="link" href="#" target="_blank" rel="noopener">📄 PDF 미리보기</a>
+      </span>
+    </div>
+  </header>
+
+  <!-- 본문 2열 -->
+  <main class="layout">
+    <!-- 좌: 트리 -->
+    <aside class="col-left" id="col-left">
+      <div class="col-header">
+        <span>목차</span>
+        <button id="btn-tree-refresh" class="btn-icon" title="새로고침">⟳</button>
+      </div>
+      <nav id="tree" class="tree" aria-label="문서 목차">
+        <p class="placeholder">프로젝트를 선택하거나 새로 만드세요.</p>
+      </nav>
+    </aside>
+
+    <!-- 우: 편집 패널 -->
+    <section class="col-right" id="col-right">
+      <div id="node-empty" class="empty-state">
+        <p>왼쪽 목차에서 절을 선택하면 편집 패널이 열립니다.</p>
+      </div>
+
+      <div id="node-view" class="node-view hidden">
+        <div class="node-head">
+          <h2 id="node-title" class="node-title"></h2>
+          <span id="node-meta" class="node-meta"></span>
+        </div>
+
+        <div id="guidelines-box" class="guidelines-box hidden">
+          <div class="guidelines-title">※ 작성요령</div>
+          <ul id="guidelines-list"></ul>
+        </div>
+
+        <!-- 탭 -->
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-tab="template" role="tab">① 양식 템플릿</button>
+          <button class="tab" data-tab="prompts" role="tab">② 작성 프롬프트</button>
+          <button class="tab" data-tab="input" role="tab">③ 입력</button>
+          <button class="tab" data-tab="convert" role="tab">④ 변환</button>
+        </div>
+
+        <!-- 1. 양식 템플릿 -->
+        <div class="panel active" data-panel="template">
+          <label class="field-label" for="template-text">양식 템플릿 (template.yaml)</label>
+          <textarea id="template-text" class="mono" rows="14" spellcheck="false"
+                    placeholder="번호/마커 규칙과 표 양식(YAML)"></textarea>
+          <div class="row gap">
+            <input id="template-desc" class="input grow" type="text"
+                   placeholder="AI 양식 생성 설명 (예: 1., 1.1 번호식 + 표 헤더 ■)" />
+            <button id="btn-template-generate" class="btn btn-secondary">AI로 양식 생성</button>
+            <button id="btn-template-save" class="btn btn-primary">저장</button>
+          </div>
+        </div>
+
+        <!-- 2. 작성 프롬프트 -->
+        <div class="panel" data-panel="prompts">
+          <div class="preset-bar">
+            <span id="preset-origin" class="preset-origin"></span>
+            <button id="btn-preset-load" class="btn btn-ghost"
+                    title="참조 3개 사업계획서(rnd-write-*) 문체·구성으로 채웁니다">
+              참조 문체 프리셋 불러오기
+            </button>
+          </div>
+          <label class="field-label" for="prompt-style">문체 스타일 (style)</label>
+          <textarea id="prompt-style" rows="6"
+                    placeholder="개조식·정량표기 등 문체 지침"></textarea>
+          <label class="field-label" for="prompt-structure">구성 (structure)</label>
+          <textarea id="prompt-structure" rows="8"
+                    placeholder="구성/전개 순서 지침"></textarea>
+          <div class="row">
+            <button id="btn-prompts-save" class="btn btn-primary">저장</button>
+          </div>
+        </div>
+
+        <!-- 3. 입력 -->
+        <div class="panel" data-panel="input">
+          <label class="field-label" for="input-text">사용자 원문 입력</label>
+          <textarea id="input-text" rows="16"
+                    placeholder="변환할 원문을 입력하세요."></textarea>
+          <div class="row">
+            <button id="btn-input-save" class="btn btn-primary">저장</button>
+          </div>
+        </div>
+
+        <!-- 4. 변환 -->
+        <div class="panel" data-panel="convert">
+          <div class="row">
+            <button id="btn-convert" class="btn btn-primary">변환 실행</button>
+            <span class="hint">입력을 양식·문체로 변환해 YAML에 반영합니다.</span>
+          </div>
+          <div id="convert-result" class="convert-result">
+            <p class="placeholder">아직 변환 결과가 없습니다.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- 토스트 -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

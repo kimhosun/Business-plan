@@ -1,0 +1,33 @@
+# 번호/마커 템플릿 예시 (schema: hwpx-yaml-template/1.0)
+# 사용자는 이 파일을 복사해 원하는 양식으로 고쳐 제공한다.
+# template.py apply / yaml2hwpx.py restore --template 에 넘긴다.
+#
+# ── 방식 1) 번호식: 1 / 1.1 / 1.1.1 ─────────────────────────────
+# numbering 이 있으면 markers 보다 우선한다.
+schema: hwpx-yaml-template/1.0
+
+numbering:
+  level1: "{n}."        # 1.  2.  3.
+  level2: "{p}.{n}"     # 1.1  1.2
+  level3: "{p}.{n}"     # 1.1.1  1.1.2
+  # {n}=현재 레벨 카운터, {p}=상위 누적(1.2), {P}=조상 전체(1.2.3)
+
+strip_existing: true    # 기존 선두 마커를 제거하고 새 번호로 교체
+
+table:
+  header_rows: 1        # 상단 1행을 헤더로
+  header_marker: ""     # 헤더 셀 선두 마커(비우면 없음)
+  cell_bullet: ""       # 본문 셀 선두 마커(비우면 없음)
+  apply_to_cells: false # true면 셀 문단에도 level 번호 규칙 적용
+
+# ── 방식 2) 마커식: □ / ○ / - (아래 주석 해제, 위 numbering 삭제) ─
+# markers:
+#   level1: "□"
+#   level2: "○"
+#   level3: "-"
+# strip_existing: true
+# table:
+#   header_rows: 1
+#   header_marker: "■"
+#   cell_bullet: "-"
+#   apply_to_cells: false

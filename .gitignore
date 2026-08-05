@@ -12,3 +12,8 @@ __pycache__/
 
 # large reference-conversion data (kept local, not tracked)
 /참조문서/
+
+# hwpx-yaml pipeline / web app runtime artifacts (may contain filled personal data)
+/hwpx_yaml_out/
+/webapp/data/
+/webapp/**/__pycache__/
