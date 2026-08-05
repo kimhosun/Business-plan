@@ -4,5 +4,11 @@
 __pycache__/
 *.pyc
 
+# Claude local / machine-specific config (personal paths, per-machine perms)
+.claude/settings.local.json
+.claude/settings.*.local.json
+.claude/tmp/
+.claude/cache/
+
 # large reference-conversion data (kept local, not tracked)
 /참조문서/

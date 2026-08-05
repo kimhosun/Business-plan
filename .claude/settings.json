@@ -1,8 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(rm -rf C:/Users/KIMHOSUN/AppData/Local/Temp/claude/c--Users-KIMHOSUN-20260602---------R1/0964542e-d962-4c84-8249-a78ccbde01af/scratchpad/fromhwp)",
-      "Bash(cp 연구개발계획서.hwp C:/Users/KIMHOSUN/AppData/Local/Temp/claude/c--Users-KIMHOSUN-20260602---------R1/0964542e-d962-4c84-8249-a78ccbde01af/scratchpad/테스트.hwp)"
+      "Bash(python tools/*)",
+      "Bash(hwp5proc:*)"
     ]
   }
 }
