@@ -59,7 +59,6 @@
 - `.claude/skills/`: HWP↔Markdown 파이프라인 및 계획서 작성 스킬(split/subsplit/fill/embed/extract-md-guidelines/rnd-proposal-writer)
 - `.agents/skills/verify-korean-rnd-regulations/`: 국내 R&D 규정의 현행성·적용성·출처 일치성을 공식 원문으로 감사하는 Codex 스킬
 - `skill_R1.md`, `skill_hwp_style.md`: 연구개발계획서 작성·서식 참고자료
-- `규정_최신성_감사_2026-08-03.md`: 장별 규정 참조의 최신성 감사 결과
 
 장별 편집과 복원 방법은 [`연구개발계획서_장별/README.md`](연구개발계획서_장별/README.md)를 참고하라.
 
@@ -94,4 +93,4 @@ python tools/hwpmd_tool.py validate --input 연구개발계획서_장별_병합.
 
 ## 규정 기준일
 
-국내 규정·지침 링크는 2026-07-30 기준으로 확인했다. 실제 제출 시에는 해당 세부사업의 최신 공고·RFP·협약 및 소관 전문기관 지침을 우선 적용해야 한다. 알려진 규정 참조 불일치는 `규정_최신성_감사_2026-08-03.md` 와 [`검토_반영_보고서.md`](검토_반영_보고서.md)에 정리되어 있다.
+국내 규정·지침 링크는 2026-07-30 기준으로 확인했다. 실제 제출 시에는 해당 세부사업의 최신 공고·RFP·협약 및 소관 전문기관 지침을 우선 적용해야 한다.
