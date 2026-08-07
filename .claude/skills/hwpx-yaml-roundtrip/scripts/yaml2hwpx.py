@@ -34,6 +34,11 @@ from hwpx_common import (  # noqa: E402
     iter_section_nodes,
     compose,
     detect_marker,
+    charpr_heights,
+    pick_body_charpr,
+    apply_fonts,
+    apply_hanging_indent,
+    apply_markdown_tables,
 )
 
 
@@ -61,6 +66,11 @@ def _load_section(path: str) -> dict:
 def restore(hwpx: str, yaml_dir: str, out: str, template: str | None = None) -> int:
     doc = open_hwpx(hwpx)
     orig_sha = sha256_file(hwpx)
+
+    # 폰트 보정용: 원본 헤더의 charPr 글자높이 맵과 본문 대표 charPr.
+    # 초소형(간격용) 문단에 본문을 채울 때 보이지 않게 렌더되는 걸 막는다.
+    heights = charpr_heights(hwpx)
+    body_charpr = pick_body_charpr(doc, heights)
 
     tpl = None
     template_mod = None
@@ -112,7 +122,8 @@ def restore(hwpx: str, yaml_dir: str, out: str, template: str | None = None) -> 
                 if (cur_marker, cur_text) == (node.get("marker", ""), node.get("text", "")):
                     skipped += 1
                     continue
-                write_para(para, node.get("marker", ""), node.get("text", ""))
+                write_para(para, node.get("marker", ""), node.get("text", ""),
+                           body_charpr=body_charpr, heights=heights)
                 written += 1
             except Exception as exc:  # noqa: BLE001
                 failures += 1
@@ -120,6 +131,44 @@ def restore(hwpx: str, yaml_dir: str, out: str, template: str | None = None) -> 
                     fail_paths.append(f"{path} -> {type(exc).__name__}: {exc}")
 
     save_hwpx(doc, out)
+
+    # 마크다운 표(| a | b |) → 실제 HWPX 표 (글꼴 적용 전에 먼저 — 새 셀도 8pt 적용되게).
+    if os.environ.get("HWPX_MD_TABLES", "0") not in ("0", "false", "False", ""):
+        mt = apply_markdown_tables(out)
+        if mt.get("ok"):
+            print(f"[yaml2hwpx] markdown tables -> hwpx tables: {mt.get('tables')}")
+        else:
+            print(f"[yaml2hwpx] markdown table convert skipped: {mt.get('reason')}")
+
+    # 전역 글꼴/크기 적용: 본문=돋움 12pt, 표 셀=돋움 8pt.
+    # 기본은 OFF(순수 왕복 무손실 보존) — 사용하려면 HWPX_APPLY_FONTS=1 로 켠다(웹앱이 켬).
+    if os.environ.get("HWPX_APPLY_FONTS", "0") not in ("0", "false", "False", ""):
+        face = os.environ.get("HWPX_FONT", "돋움")
+        try:
+            body_pt = int(os.environ.get("HWPX_BODY_PT", "12"))
+            cell_pt = int(os.environ.get("HWPX_CELL_PT", "8"))
+        except ValueError:
+            body_pt, cell_pt = 12, 8
+        info = apply_fonts(out, face=face, body_pt=body_pt, cell_pt=cell_pt)
+        if info.get("ok"):
+            print(f"[yaml2hwpx] fonts applied: 본문 {face} {body_pt}pt, 표 {face} {cell_pt}pt "
+                  f"(runs={info.get('runs_changed')})")
+        else:
+            print(f"[yaml2hwpx] font apply skipped: {info.get('reason')}")
+
+    # 개조식 내어쓰기(마커 폭 기준 hanging indent) — 본문 문단에 적용(기본 OFF, 웹앱이 켬).
+    if os.environ.get("HWPX_HANGING_INDENT", "0") not in ("0", "false", "False", ""):
+        try:
+            hpt = int(os.environ.get("HWPX_BODY_PT", "12"))
+        except ValueError:
+            hpt = 12
+        hi = apply_hanging_indent(out, body_pt=hpt)
+        if hi.get("ok"):
+            print(f"[yaml2hwpx] hanging indent applied: 문단 {hi.get('paras_changed')}개 "
+                  f"(paraPr +{hi.get('parapr_added')})")
+        else:
+            print(f"[yaml2hwpx] hanging indent skipped: {hi.get('reason')}")
+
     size = os.path.getsize(out)
     print(f"[yaml2hwpx] nodes written: {written}, skipped(unchanged): {skipped}, "
           f"failures: {failures}, "

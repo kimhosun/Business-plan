@@ -83,6 +83,12 @@ html, body {
   border-color: var(--border);
 }
 .btn-secondary:not(:disabled):hover { background: var(--surface-2); }
+.btn-danger {
+  background: var(--surface);
+  color: var(--err);
+  border-color: var(--err);
+}
+.btn-danger:not(:disabled):hover { background: #fdecec; }
 .btn-icon {
   background: none;
   border: none;
@@ -104,6 +110,7 @@ html, body {
   color: var(--text);
 }
 .input.grow { flex: 1 1 auto; min-width: 120px; }
+.input.project-name { width: 150px; }
 
 .link {
   color: var(--primary);
@@ -147,6 +154,55 @@ html, body {
   background: var(--surface);
   z-index: 1;
 }
+
+/* ---------- RFP 업로드 → 자동작성 ---------- */
+.rfp-box {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--chapter-bg);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.rfp-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 11px;
+  border: 1px dashed var(--chapter);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--chapter);
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background .12s, box-shadow .12s;
+}
+.rfp-btn:hover { background: var(--chapter-bg-hover); box-shadow: var(--shadow); }
+.rfp-btn.disabled { opacity: .55; cursor: progress; pointer-events: none; }
+.rfp-ico { font-size: 16px; }
+.rfp-label { flex: 1; }
+.rfp-apply {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.rfp-apply input { margin: 0; }
+.rfp-status {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-muted);
+  word-break: break-word;
+}
+.rfp-status.hidden { display: none; }
+.rfp-status.busy { color: var(--accent); }
+.rfp-status.busy::before { content: "⏳ "; }
+.rfp-status.ok { color: var(--ok); }
+.rfp-status.warn { color: var(--accent); }
+.rfp-status.err { color: var(--err); }
 
 /* ---------- 트리 ---------- */
 .tree { padding: 6px 0; }
@@ -209,6 +265,21 @@ html, body {
 .tree-title-txt {
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.tree-leaf.filled { background: var(--chapter-bg); }
+.tree-leaf.filled:hover { background: var(--chapter-bg-hover); }
+.tree-badge {
+  flex: none;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--chapter);
+  background: #fff;
+  border: 1px solid var(--chapter);
+  border-radius: 10px;
+  padding: 0 6px;
+  line-height: 16px;
   white-space: nowrap;
 }
 

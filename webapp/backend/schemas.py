@@ -53,6 +53,16 @@ class ChatBody(_Base):
     apply: bool = True
 
 
+class RfpAutofillBody(_Base):
+    """POST .../rfp/autofill — {sections?, apply}
+
+    sections 를 주면 그 절만, 없으면 rfp.TARGET_SECTIONS 전체를 자동작성한다.
+    apply=True 면 생성 초안을 yaml/section_*.yaml 에도 병합(빌드 즉시 반영).
+    """
+    sections: list[str] | None = None
+    apply: bool = False
+
+
 # ── 응답 모델 ────────────────────────────────────────────────────────────────
 class ProjectInfo(_Base):
     """GET /api/projects 목록 항목."""

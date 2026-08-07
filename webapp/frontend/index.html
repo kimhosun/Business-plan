@@ -16,6 +16,9 @@
       <select id="project-select" class="select" title="프로젝트 선택">
         <option value="">프로젝트 선택…</option>
       </select>
+      <button id="btn-del-project" class="btn btn-danger" title="선택한 프로젝트와 관련 파일을 모두 삭제합니다" disabled>🗑 삭제</button>
+      <input id="project-name" class="input project-name" type="text" maxlength="60"
+             placeholder="새 프로젝트명(선택)" title="새 프로젝트 이름 — 비우면 문서명으로 저장됩니다" />
       <button id="btn-new-project" class="btn btn-secondary">기본 문서로 새 프로젝트</button>
       <button id="btn-build" class="btn btn-primary" disabled>hwpx 빌드</button>
       <span id="build-links" class="build-links hidden">
@@ -33,6 +36,22 @@
         <span>목차</span>
         <button id="btn-tree-refresh" class="btn-icon" title="새로고침">⟳</button>
       </div>
+
+      <!-- RFP 업로드 → 자동작성 -->
+      <div class="rfp-box">
+        <label class="rfp-btn" for="rfp-file"
+               title="RFP(공고·제안요청서) 한글/PDF 를 올리면 1.1·1.2·2.1·2.2·4.1·4.2·5.1·5.2·5.3·5.5 절을 읽고, 인터넷 조사(시장·기술·표준·정책 수치)를 반영해 자동 작성합니다">
+          <span class="rfp-ico">📥</span>
+          <span class="rfp-label">RFP 업로드 · 자동작성</span>
+          <input type="file" id="rfp-file" accept=".hwp,.hwpx,.pdf" hidden />
+        </label>
+        <label class="rfp-apply" title="체크하면 자동작성분을 문서(YAML)에 즉시 반영해 절별 ④ 변환 결과로도 볼 수 있습니다. 미체크여도 [hwpx 빌드] 시 입력한 절이 자동 반영됩니다.">
+          <input type="checkbox" id="rfp-apply" />
+          <span>문서에 즉시 반영(빌드 때도 자동 반영됨)</span>
+        </label>
+        <div id="rfp-status" class="rfp-status"></div>
+      </div>
+
       <nav id="tree" class="tree" aria-label="문서 목차">
         <p class="placeholder">프로젝트를 선택하거나 새로 만드세요.</p>
       </nav>

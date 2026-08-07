@@ -123,26 +123,48 @@ def _local_apply_to_nodes(nodes: list[dict], tpl: dict) -> None:
             node["marker"] = new
 
 
+# 본문이 이미 선두 마커(□ ○ ㅇ - · < 1. (1) ① 등)를 달고 있는지 판정.
+# LLM/입력이 마커를 본문에 포함했는데 template 마커까지 덧대면 "□ ㅇ ..." 같은
+# 이중 마커가 생기므로, 이런 경우 template 적용을 건너뛴다(=본문 마커를 신뢰).
+_LEADING_MARK_ALTS = [
+    r"\d+(?:\.\d+)+\.?", r"\d+\.", r"\d+\)", r"\(\d+\)",
+    r"[가-힣]\.", r"[가-힣]\)",
+    r"[①-⑳ⓐ-ⓩ❶-❿]",
+    r"[ㅇㆍ]",                         # 한글 자모 불릿
+    r"[□■○●◇◆◈△▲▽▼∙·•◦∘⁃]",         # 기호 불릿
+    r"[oO]",                          # 라틴 o 불릿
+    r"[-–—]", r"[*※]",
+]
+_LEADING_MARK_RE = re.compile(r"^\s*(?:" + "|".join(_LEADING_MARK_ALTS) + r")\s+")
+
+
+def _has_leading_marker(text: str) -> bool:
+    return bool(text) and bool(_LEADING_MARK_RE.match(text))
+
+
 def _apply_markers(
     segments: list[str], targets: list[str], template: dict | None
 ) -> list[dict]:
-    """세그먼트를 targets에 매핑하고 template의 레벨1 마커/번호를 계산한다.
+    """세그먼트를 targets에 매핑한다. 본문에 마커가 없을 때만 template 마커를 붙인다.
 
-    target당 노드 1개(kind=para, level=1)를 만들어 apply_to_nodes에 통과시킨다.
-    세그먼트가 부족하면 ""로 채운다. targets 길이를 넘겨 쓰지 않는다.
+    target당 노드 1개(kind=para, level=1)를 만든다. 세그먼트가 부족하면 ""로 채운다.
+    본문(세그먼트) 중 하나라도 이미 선두 마커를 달고 있으면(개조식 □/○/- 등),
+    template 을 적용하지 않고 본문 마커를 그대로 살린다 — 그렇지 않으면 "□ ㅇ …"
+    같은 이중 마커가 생긴다. 마커가 전혀 없는 순수 본문일 때만 template 이 마커를 부여한다.
     """
-    nodes: list[dict] = []
-    for i, path in enumerate(targets):
-        text = segments[i] if i < len(segments) else ""
-        nodes.append(
-            {"path": path, "kind": "para", "level": 1, "marker": "", "text": text}
-        )
+    texts = [segments[i] if i < len(segments) else "" for i in range(len(targets))]
+    nodes: list[dict] = [
+        {"path": path, "kind": "para", "level": 1, "marker": "", "text": text}
+        for path, text in zip(targets, texts)
+    ]
 
-    apply = _apply_to_nodes or _local_apply_to_nodes
-    try:
-        apply(nodes, template or {})
-    except Exception:  # noqa: BLE001 - 마커 계산 실패해도 text는 보존
-        pass
+    # 본문에 선두 마커가 이미 있으면 template 마커를 덧대지 않는다(이중 마커 방지).
+    if not any(_has_leading_marker(t) for t in texts):
+        apply = _apply_to_nodes or _local_apply_to_nodes
+        try:
+            apply(nodes, template or {})
+        except Exception:  # noqa: BLE001 - 마커 계산 실패해도 text는 보존
+            pass
 
     return [
         {
@@ -207,11 +229,16 @@ _CLI_GLOBS = (
     "~/AppData/Roaming/npm/claude.cmd",
 )
 
-# 문서 작성만 시키므로 파일/셸 도구는 모두 막는다(시스템 프롬프트도 교체).
-_CLI_DISALLOWED_TOOLS = (
-    "Bash Edit Write Read Glob Grep WebFetch WebSearch Task NotebookEdit "
-    "TodoWrite Agent Artifact"
-)
+# 파일/셸/에이전트 도구는 항상 막는다(시스템 프롬프트도 교체해 순수 생성기로 사용).
+_CLI_BLOCK_ALWAYS = [
+    "Bash", "Edit", "Write", "Read", "Glob", "Grep",
+    "Task", "NotebookEdit", "TodoWrite", "Agent", "Artifact",
+]
+# 웹 조사 도구 — 기본은 막지만, allow_tools 로 명시하면 인터넷 조사에 열어 준다.
+_CLI_WEB_TOOLS = ["WebSearch", "WebFetch"]
+
+# 기본(조사 비활성) 차단 목록: 파일/셸 + 웹 전부.
+_CLI_DISALLOWED_TOOLS = " ".join(_CLI_BLOCK_ALWAYS + _CLI_WEB_TOOLS)
 
 
 @lru_cache(maxsize=1)
@@ -234,16 +261,31 @@ def _find_cli() -> str | None:
 
 
 def _cli_text(
-    system: str, prompt: str, *, schema: dict | None = None, model: str | None = None
+    system: str,
+    prompt: str,
+    *,
+    schema: dict | None = None,
+    model: str | None = None,
+    allow_tools: tuple[str, ...] | None = None,
+    timeout: float | None = None,
 ) -> str:
     """claude -p 헤드리스 호출. 최종 응답 텍스트(result)를 반환한다.
 
     시스템 프롬프트를 --system-prompt 로 **교체**하고 도구를 막아, 대화형
     Claude Code 가 아니라 단순 텍스트 생성기로 쓴다.
+
+    allow_tools 를 주면(예: WebSearch/WebFetch) 그 도구만 --allowed-tools 로 미리
+    승인해 헤드리스에서도 프롬프트 없이 쓰게 하고, 차단 목록에서는 뺀다. 나머지
+    파일/셸/에이전트 도구는 계속 막는다. 웹 조사는 시간이 더 걸리므로 timeout 을
+    넉넉히 넘길 수 있다.
     """
     cli = _find_cli()
     if not cli:
         raise RuntimeError("claude 실행파일을 찾지 못했습니다.")
+
+    allow = [t for t in (allow_tools or []) if t]
+    # 허용 도구는 차단 목록에서 제외(파일/셸/에이전트 + 허용 안 한 웹은 계속 차단).
+    disallowed = _CLI_BLOCK_ALWAYS + [t for t in _CLI_WEB_TOOLS if t not in allow]
 
     argv = [
         cli, "-p",
@@ -253,8 +295,10 @@ def _cli_text(
         "--no-session-persistence",
         "--disable-slash-commands",
         "--strict-mcp-config",
-        "--disallowed-tools", _CLI_DISALLOWED_TOOLS,
+        "--disallowed-tools", " ".join(disallowed),
     ]
+    if allow:
+        argv += ["--allowed-tools", " ".join(allow)]
     if schema:
         argv += ["--json-schema", json.dumps(schema, ensure_ascii=False)]
     # 응답이 너무 오래 걸리면 CLAUDE_EFFORT=medium/low 로 낮춰 쓴다(품질↔지연 트레이드오프).
@@ -262,10 +306,11 @@ def _cli_text(
     if effort:
         argv += ["--effort", effort]
 
-    try:
-        timeout = float(os.environ.get("CLAUDE_CLI_TIMEOUT", "300"))
-    except ValueError:
-        timeout = 300.0
+    if timeout is None:
+        try:
+            timeout = float(os.environ.get("CLAUDE_CLI_TIMEOUT", "300"))
+        except ValueError:
+            timeout = 300.0
 
     proc = subprocess.run(
         argv,
@@ -306,16 +351,26 @@ def _ask(
     *,
     max_tokens: int,
     schema: dict | None = None,
+    allow_tools: tuple[str, ...] | None = None,
+    timeout: float | None = None,
 ) -> str:
     """API 키가 있으면 SDK, 없으면 claude 실행파일로 물어 텍스트를 받는다.
 
+    allow_tools 에 웹 조사 도구(WebSearch/WebFetch)를 주면 CLI 는 그 도구를 열고,
+    SDK 경로는 서버측 web_search 도구를 붙여 인터넷 조사를 하게 한다.
     둘 다 불가하거나 실패하면 예외를 올린다(호출부가 스텁으로 폴백).
     """
+    web = bool(allow_tools)
     if os.environ.get("ANTHROPIC_API_KEY"):
         client, model = _client_and_model()
         if client is not None:
-            return _messages_text(client, model, system, messages, max_tokens)
-    return _cli_text(system, _flatten_history(messages), schema=schema)
+            return _messages_text(
+                client, model, system, messages, max_tokens, web_search=web
+            )
+    return _cli_text(
+        system, _flatten_history(messages),
+        schema=schema, allow_tools=allow_tools, timeout=timeout,
+    )
 
 
 def _client_and_model():
@@ -330,15 +385,29 @@ def _client_and_model():
 
 
 def _messages_text(
-    client, model: str, system: str, messages: list[dict], max_tokens: int
+    client, model: str, system: str, messages: list[dict], max_tokens: int,
+    *, web_search: bool = False,
 ) -> str:
-    """대화 이력(messages)을 그대로 넘겨 호출하고 text 블록을 이어붙여 반환."""
-    resp = client.messages.create(
-        model=model,
-        max_tokens=max_tokens,
-        system=system,
-        messages=messages,
-    )
+    """대화 이력(messages)을 그대로 넘겨 호출하고 text 블록을 이어붙여 반환.
+
+    web_search=True 면 Anthropic 서버측 web_search 도구를 붙여 인터넷 조사를 시킨다
+    (검색·인용은 서버에서 처리되고 최종 text 블록에 조사 반영 결과가 담긴다).
+    """
+    kwargs: dict = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "system": system,
+        "messages": messages,
+    }
+    if web_search:
+        try:
+            max_uses = int(os.environ.get("WEB_SEARCH_MAX_USES", "8"))
+        except ValueError:
+            max_uses = 8
+        kwargs["tools"] = [
+            {"type": "web_search_20250305", "name": "web_search", "max_uses": max_uses}
+        ]
+    resp = client.messages.create(**kwargs)
     parts = [b.text for b in resp.content if getattr(b, "type", None) == "text"]
     return "".join(parts)
 
@@ -525,6 +594,195 @@ def _claude_chat_write(context: dict, history: list[dict], message: str) -> dict
         "reply": str(parsed.get("reply") or "").strip(),
         "draft": None if draft is None else str(draft),
     }
+
+
+# ── RFP 기반 절 자동작성 ─────────────────────────────────────────────────────
+# RFP(공고·제안요청서) 원문을 근거로 한 절(節)의 본문 초안을 통째로 쓴다.
+# chat_write 와 달리 대화 없이 1회 생성이며, 반환은 초안 텍스트(str) 하나다.
+#
+# 기본은 '인터넷 조사 후 정량 작성' 모드다: WebSearch/WebFetch 로 시장·기술·표준·정책
+# 수치를 실제로 조사해 (출처, 연도)와 함께 반영한다. RFP_DISABLE_RESEARCH 를 설정하면
+# 조사 없이(수치는 자리표시) 쓰는 예전 방식으로 되돌린다.
+_RFP_RESEARCH_TOOLS = ("WebSearch", "WebFetch")
+
+
+def _rfp_research_enabled() -> bool:
+    return os.environ.get("RFP_DISABLE_RESEARCH", "").strip() == ""
+
+
+def _research_timeout() -> float:
+    # 웹 조사는 여러 번 검색·열람하므로 기본 CLI 타임아웃(300s)보다 넉넉히.
+    try:
+        return float(os.environ.get("CLAUDE_RESEARCH_TIMEOUT", "600"))
+    except ValueError:
+        return 600.0
+
+
+# 조사 활성(기본): 먼저 인터넷을 조사해 근거·수치를 확보하고 출처와 함께 작성.
+_RFP_SYSTEM_RESEARCH = (
+    "당신은 정부 R&D 연구개발계획서(사업계획서)의 한 절(節)을 작성하는 전문 집필자다. "
+    "지어내지 말고 '조사해서' 쓴다 — 먼저 WebSearch/WebFetch 로 인터넷을 조사해 근거·수치를 "
+    "확보한 뒤, [RFP 원문]과 조사 결과를 종합해 지정된 [문체]·[구성]·[작성요령]·[양식 템플릿]에 "
+    "맞춰 이 절의 본문을 작성한다.\n"
+    "조사 지침\n"
+    "- 이 절 주제에 필요한 최신 정량 근거를 실제로 검색한다: 국내·외 시장규모·성장률(CAGR)·전망, "
+    "기술수준·핵심 플레이어·경쟁사, 관련 특허 동향·국제표준(IEC/ISO 등)·인증·선급, 정책·법령·"
+    "유사 국책과제 실적 등 그 절에 해당하는 항목을 우선 조사한다.\n"
+    "- 정부·공공기관·표준화기구·전문 시장조사기관·학술/산업 보고서 등 신뢰할 수 있는 출처를 "
+    "우선하고, 필요하면 WebFetch 로 원문을 확인한다. 여러 출처로 교차 확인한다.\n"
+    "작성 규칙\n"
+    "1) RFP 요건과 '조사로 확인한 사실'에 근거해 이 절 주제만 쓴다(다른 절 내용 금지).\n"
+    "2) 개조식·정량 표기를 기본으로 하고, 핵심 수치에는 (출처, 연도)를 괄호로 간단히 병기한다. "
+    "예: '글로벌 부유식 해상풍력 시장 2030년 약 XX억달러 전망(기관명, 2024)'.\n"
+    "3) 수치는 조사로 확인된 값만 쓴다. 끝내 근거를 못 찾은 값만 [○○ 확인 필요]로 남기고, "
+    "임의로 지어내지 않는다.\n"
+    "4) [양식 템플릿]의 번호/마커 계층(□/○/- 또는 1./1.1 등)에 맞춘 개조식 문단으로 쓴다.\n"
+    "5) 절 제목·머리말·조사 로그·해설은 넣지 않는다. 본문 개조식 문단을 먼저 쓰고, 검토용으로 "
+    "맨 끝에만 '[출처]' 한 줄 뒤 참고한 출처 목록(매체/기관명 + URL)을 붙일 수 있다"
+    "(제출 전 사용자가 다듬는다). 코드펜스로 감싸지 않는다."
+)
+
+# 조사 비활성(RFP_DISABLE_RESEARCH): 웹 없이 RFP 근거로만, 없는 수치는 자리표시.
+_RFP_SYSTEM_NORESEARCH = (
+    "당신은 정부 R&D 연구개발계획서(사업계획서)의 한 절(節)을 작성하는 전문 집필자다. "
+    "아래 [RFP 원문](공고·제안요청서)에서 이 절에 필요한 배경·요건·목표·범위를 읽어, "
+    "지정된 [문체]·[구성]·[작성요령]·[양식 템플릿]에 맞춰 이 절의 본문만 작성한다.\n"
+    "규칙\n"
+    "1) 반드시 RFP 내용에 근거해 이 절의 주제만 쓴다. 다른 절의 내용은 넣지 않는다.\n"
+    "2) 개조식(짧은 개조식 종결)·정량 표기를 기본으로 하되, RFP에 없는 구체 수치는 "
+    "지어내지 말고 [○○ 확인 필요] 같은 자리표시로 남긴다.\n"
+    "3) [양식 템플릿]의 번호/마커 계층(□/○/- 또는 1./1.1 등)에 맞춘 개조식 문단으로 쓴다.\n"
+    "4) 절 제목·머리말·해설 없이 본문 문단만 출력한다. 코드펜스로 감싸지 않는다."
+)
+
+
+def _rfp_context_block(context: dict) -> str:
+    """절 맥락(제목·작성요령·양식·문체·구성)을 시스템 프롬프트 꼬리로. RFP 원문 제외."""
+    context = context or {}
+    prompts = context.get("prompts") or {}
+    guides = [g for g in (context.get("guidelines") or []) if g][:12]
+    template = context.get("template") or {}
+    try:
+        tpl_yaml = yaml.safe_dump(template, allow_unicode=True, sort_keys=False)
+    except Exception:  # noqa: BLE001
+        tpl_yaml = ""
+    label = (context.get("label") or "").strip()
+    title = (context.get("title") or "").strip()
+    return (
+        f"\n\n[대상 절]\n{label} {title}".rstrip()
+        + f"\n\n[작성요령]\n{chr(10).join('- ' + g for g in guides) or '(없음)'}"
+        + f"\n\n[양식 템플릿]\n```yaml\n{tpl_yaml}```"
+        + f"\n\n[문체]\n{prompts.get('style') or '(지정 없음)'}"
+        + f"\n\n[구성]\n{prompts.get('structure') or '(지정 없음)'}"
+    )
+
+
+def _stub_draft_from_rfp(context: dict, rfp_text: str, reason: str = "") -> str:
+    """키/CLI 실패 시 결정론적 대체 — RFP 발췌를 양식 마커에 맞춰 개조식으로 정리."""
+    template = (context or {}).get("template") or {}
+    segs = _split_segments(rfp_text)[:8]
+    nodes = _apply_markers(segs, [f"stub/{i}" for i in range(len(segs))], template)
+    lines = [f"{n['marker']} {n['text']}".strip() for n in nodes if n["text"]]
+    why = f" : {reason}" if reason else ""
+    head = f"[스텁 모드 — Claude 호출 실패로 RFP 발췌만 정리했습니다{why}]"
+    return head + "\n" + "\n".join(lines)
+
+
+def _claude_draft_from_rfp(context: dict, rfp_text: str) -> str:
+    note = (context or {}).get("note") or ""
+    research = _rfp_research_enabled()
+    system = (_RFP_SYSTEM_RESEARCH if research else _RFP_SYSTEM_NORESEARCH)
+    ask_text = (
+        "먼저 이 절 주제의 최신 시장·기술·표준·정책 수치를 인터넷으로 조사한 뒤, "
+        "조사한 근거와 (출처, 연도)를 반영해 정량적으로 작성하라."
+        if research
+        else "위 RFP를 근거로 이 절의 본문을 지정 문체·구성·양식에 맞춰 작성하라."
+    )
+    user = (
+        f"[RFP 원문]\n{rfp_text}\n\n"
+        f"[요청]\n{ask_text}"
+        + (f"\n{note}" if note else "")
+    )
+    raw = _ask(
+        system + _rfp_context_block(context),
+        [{"role": "user", "content": user}],
+        max_tokens=16000,
+        allow_tools=_RFP_RESEARCH_TOOLS if research else None,
+        timeout=_research_timeout() if research else None,
+    )
+    # 모델이 실수로 코드펜스를 씌우면 벗겨 본문만 취한다.
+    body = _extract_fenced(raw, ("text", "markdown", "md")).strip()
+    return body or raw.strip()
+
+
+def draft_from_rfp(context: dict | None, rfp_text: str) -> str:
+    """RFP 원문을 근거로 한 절의 본문 초안(str)을 반환한다.
+
+    context = {label,title,guidelines,template,prompts,note}
+    API 키 → claude 실행파일 → 스텁 순으로 폴백한다.
+    """
+    context = context if isinstance(context, dict) else {}
+    rfp_text = (rfp_text or "").strip()
+    if not rfp_text:
+        return ""
+    try:
+        return _claude_draft_from_rfp(context, rfp_text)
+    except Exception as exc:  # noqa: BLE001 - 어떤 오류든 스텁 폴백
+        return _stub_draft_from_rfp(context, rfp_text, reason=str(exc)[:200])
+
+
+def segment_input(
+    input_text: str,
+    template: dict | None,
+    prompts: dict | None,
+    targets: list[str] | None,
+) -> list[dict]:
+    """LLM 없이 입력 텍스트를 targets 에 결정론적으로 매핑한 [{path,marker,text}].
+
+    이미 완성된 초안(draft)을 추가 LLM 호출 없이 yaml 병합용으로 나눌 때 쓴다.
+    convert_input 과 달리 문체 재작성을 하지 않는다(_stub_convert_input 과 동일 로직).
+    """
+    template = template if isinstance(template, dict) else {}
+    prompts = prompts if isinstance(prompts, dict) else {}
+    targets = list(targets or [])
+    if not targets:
+        return []
+    return _stub_convert_input(input_text, template, prompts, targets)
+
+
+def segment_input_packed(
+    input_text: str,
+    template: dict | None,
+    targets: list[str] | None,
+) -> list[dict]:
+    """초안 전체를 targets 슬롯에 **유실 없이** 매핑한 [{path,marker,text}].
+
+    segment_input(계약: 항상 len(targets), 초과분 버림·부족분 공백)과 달리, 문서를
+    자동 반영할 때 내용이 잘리거나 원본 슬롯이 빈값으로 지워지는 것을 막는다.
+
+    - 세그먼트 수 > 슬롯 수: 앞 슬롯을 채우고 **마지막 슬롯에 나머지를 합쳐** 담는다(버림 없음).
+    - 세그먼트 수 ≤ 슬롯 수: 앞에서부터 채우고, **남는 슬롯은 결과에 넣지 않아** 원본 문단을
+      건드리지 않는다(placeholder 유지, 빈값 덮어쓰기 없음).
+
+    문서 템플릿의 문단 슬롯 수가 적은 절(예: 5-3=1칸)에서도 조사·작성한 본문 전체가
+    최소한 한 문단으로라도 반영되게 하는 게 목적이다.
+    """
+    template = template if isinstance(template, dict) else {}
+    targets = list(targets or [])
+    if not targets:
+        return []
+    segments = _split_segments(input_text)
+    if not segments:
+        return []
+    nt = len(targets)
+    if len(segments) > nt:
+        used = segments[: nt - 1] + ["\n".join(segments[nt - 1:])] if nt >= 1 else []
+        tgt = targets
+    else:
+        used = segments
+        tgt = targets[: len(segments)]
+    # used 와 tgt 는 길이가 같으므로 _apply_markers 가 공백 패딩 없이 1:1 매핑한다.
+    return _apply_markers(used, tgt, template)
 
 
 # ── 공개 API ─────────────────────────────────────────────────────────────────

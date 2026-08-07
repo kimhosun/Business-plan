@@ -8,7 +8,11 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
+import unicodedata
+import zipfile
+from collections import Counter
 from pathlib import Path
 from typing import Iterator
 
@@ -209,6 +213,548 @@ def compose(marker: str, text: str) -> str:
     return f"{marker} {text}" if marker else text
 
 
-def write_para(para, marker: str, text: str) -> None:
-    """marker+text를 첫 run의 서식(charPr)을 보존하며 기록한다."""
-    para.text = compose(marker, text)
+def charpr_heights(hwpx_path) -> dict[int, int]:
+    """header.xml 의 charPr id → height(글자높이, pt×100) 맵. 실패 시 {}."""
+    heights: dict[int, int] = {}
+    try:
+        with zipfile.ZipFile(str(hwpx_path)) as z:
+            names = [n for n in z.namelist() if n.lower().endswith("header.xml")]
+            for nm in names:
+                xml = z.read(nm).decode("utf-8", "replace")
+                for tag in re.finditer(r"<[A-Za-z0-9]*:?charPr\b[^>]*>", xml):
+                    t = tag.group(0)
+                    idm = re.search(r'\bid="(\d+)"', t)
+                    hm = re.search(r'\bheight="(\d+)"', t)
+                    if idm and hm:
+                        heights[int(idm.group(1))] = int(hm.group(1))
+    except Exception:  # noqa: BLE001 - 헤더 파싱 실패는 폰트 보정만 비활성
+        return {}
+    return heights
+
+
+# 이 값(pt×100) 미만 글자높이는 '숨김/간격용' 문단으로 보고, 본문을 채우면 본문 크기로 올린다.
+TINY_CHARPR_THRESHOLD = 900  # 9pt
+
+
+def pick_body_charpr(doc, heights: dict[int, int],
+                     tiny_threshold: int = TINY_CHARPR_THRESHOLD):
+    """본문(정상 크기) 문단에서 가장 흔한 charPr id 를 고른다. 없으면 None."""
+    if not heights:
+        return None
+    c: Counter = Counter()
+    for si, section in enumerate(doc.sections):
+        for node in iter_section_nodes(section, si):
+            if node.get("kind") not in ("para", "cell_para"):
+                continue
+            if not (node.get("text") or "").strip():
+                continue
+            cp = node.get("char_pr")
+            try:
+                h = heights.get(int(cp))
+            except (TypeError, ValueError):
+                h = None
+            if h is not None and h >= tiny_threshold:
+                c[int(cp)] += 1
+    return c.most_common(1)[0][0] if c else None
+
+
+def write_para(para, marker: str, text: str, *,
+               body_charpr=None, heights: dict[int, int] | None = None,
+               tiny_threshold: int = TINY_CHARPR_THRESHOLD) -> None:
+    """marker+text 를 첫 run 의 서식(charPr)을 보존하며 기록한다.
+
+    body_charpr/heights 가 주어지고, 대상 문단의 글자높이가 tiny_threshold 미만
+    (원본 템플릿의 1pt·4pt 간격용 빈 문단 등)인데 실제 본문을 채우는 경우에는,
+    보이지 않는 초소형 글씨로 렌더되지 않도록 charPr 를 본문 크기로 올린다.
+    빈 본문이거나 이미 정상 크기면 건드리지 않는다(왕복 무손실 불변).
+    """
+    composed = compose(marker, text)
+    para.text = composed
+    if composed.strip() and body_charpr is not None and heights:
+        cur = para.char_pr_id_ref
+        try:
+            h = heights.get(int(cur)) if cur is not None else None
+        except (TypeError, ValueError):
+            h = None
+        if h is not None and h < tiny_threshold:
+            para.char_pr_id_ref = body_charpr
+
+
+# ── 전역 글꼴/크기 적용(후처리) ───────────────────────────────────────────────
+# 최종 hwpx 의 "본문 텍스트=지정글꼴 12pt, 표 셀 텍스트=지정글꼴 8pt" 를 전 구간에
+# 강제한다. header.xml 에 두 개의 charPr(본문/셀)을 새로 만들고, 각 section*.xml 의
+# 텍스트가 있는 run 의 charPrIDRef 를 표 셀 안이면 셀용, 아니면 본문용으로 바꾼다.
+# 빈 run(간격용 빈 문단 등)은 건드리지 않아 레이아웃이 부풀지 않는다. 순수 문자열
+# 치환이라 python-hwpx 가 쓴 XML 을 최소 변경으로 손대며(prefix hh:/hp: 유지), 다른
+# 바이트는 그대로 둔다.
+_FONT_SCRIPTS = [
+    ("hangul", "HANGUL"), ("latin", "LATIN"), ("hanja", "HANJA"),
+    ("japanese", "JAPANESE"), ("other", "OTHER"), ("symbol", "SYMBOL"),
+    ("user", "USER"),
+]
+
+
+def _font_ids_by_lang(header_xml: str, face: str) -> dict[str, str]:
+    """fontfaces 각 언어그룹에서 face(예: '돋움')의 font id 를 찾아 {LANG: id}."""
+    out: dict[str, str] = {}
+    for blk in re.finditer(
+        r'<hh:fontface\s+lang="([A-Z]+)"[^>]*>(.*?)</hh:fontface>', header_xml, re.S
+    ):
+        lang = blk.group(1)
+        fm = re.search(rf'<hh:font\s+id="(\d+)"\s+face="{re.escape(face)}"', blk.group(2))
+        if fm:
+            out[lang] = fm.group(1)
+    return out
+
+
+def _clone_charpr(base: str, new_id: str, height: int, dotum: dict[str, str]) -> str:
+    """기준 charPr 문자열을 복제해 id·height 를 바꾸고 fontRef 를 지정 글꼴로 교체."""
+    s = re.sub(r'(<hh:charPr\s+id=")\d+(")', rf"\g<1>{new_id}\g<2>", base, count=1)
+    s = re.sub(r'(<hh:charPr\b[^>]*?\bheight=")\d+(")', rf"\g<1>{height}\g<2>", s, count=1)
+
+    def _fix_ref(m: "re.Match") -> str:
+        tag = m.group(0)
+        for attr, lang in _FONT_SCRIPTS:
+            if lang in dotum:
+                tag = re.sub(rf'{attr}="\d+"', f'{attr}="{dotum[lang]}"', tag)
+        return tag
+
+    return re.sub(r"<hh:fontRef\b[^>]*/>", _fix_ref, s, count=1)
+
+
+def _augment_header(header_xml: str, face: str, body_h: int, cell_h: int):
+    """본문/셀용 charPr 두 개를 charProperties 에 추가하고 (header, body_id, cell_id)."""
+    dotum = _font_ids_by_lang(header_xml, face)
+    if not dotum:
+        return header_xml, None, None  # 해당 글꼴이 문서에 없음
+    ids = [int(i) for i in re.findall(r'<hh:charPr\s+id="(\d+)"', header_xml)]
+    if not ids:
+        return header_xml, None, None
+    base_id = 0 if 0 in ids else ids[0]
+    bm = re.search(rf'<hh:charPr\s+id="{base_id}"[^>]*>.*?</hh:charPr>', header_xml, re.S)
+    if not bm:
+        return header_xml, None, None
+    body_id, cell_id = str(max(ids) + 1), str(max(ids) + 2)
+    body_cp = _clone_charpr(bm.group(0), body_id, body_h, dotum)
+    cell_cp = _clone_charpr(bm.group(0), cell_id, cell_h, dotum)
+    header_xml = header_xml.replace(
+        "</hh:charProperties>", body_cp + cell_cp + "</hh:charProperties>", 1
+    )
+    header_xml = re.sub(
+        r'<hh:charProperties itemCnt="(\d+)">',
+        lambda m: f'<hh:charProperties itemCnt="{int(m.group(1)) + 2}">',
+        header_xml, count=1,
+    )
+    return header_xml, body_id, cell_id
+
+
+def _tc_spans(x: str) -> list[tuple[int, int]]:
+    """표 셀(<hp:tc>…</hp:tc>) 최상위 구간 [(start,end)] — 중첩표도 이 구간에 포함."""
+    spans: list[tuple[int, int]] = []
+    depth = 0
+    start: int | None = None
+    for m in re.finditer(r"<hp:tc\b[^>]*>|</hp:tc>", x):
+        tok = m.group(0)
+        if tok.startswith("</hp:tc"):
+            depth -= 1
+            if depth <= 0 and start is not None:
+                spans.append((start, m.end()))
+                start = None
+                depth = 0
+        elif tok.endswith("/>"):
+            continue  # 자기완결(빈 셀) — 중첩 아님
+        else:
+            if depth == 0:
+                start = m.start()
+            depth += 1
+    return spans
+
+
+def _rewrite_section_runs(x: str, body_id: str, cell_id: str) -> tuple[str, int]:
+    """텍스트가 있는 run 의 charPrIDRef 를 본문/셀용으로 치환. (xml, 변경 run 수)."""
+    spans = _tc_spans(x)
+
+    def _in_cell(pos: int) -> bool:
+        for s, e in spans:
+            if s <= pos < e:
+                return True
+            if s > pos:
+                break
+        return False
+
+    changed = 0
+
+    def _repl(m: "re.Match") -> str:
+        nonlocal changed
+        attrs, body = m.group(1), m.group(2)
+        if 'charPrIDRef="' not in attrs:
+            return m.group(0)
+        texts = re.findall(r"<hp:t\b[^>]*>(.*?)</hp:t>", body, re.S)
+        if not any(t.strip() for t in texts):
+            return m.group(0)  # 빈 run(간격용) 은 그대로 — 레이아웃 보존
+        tid = cell_id if _in_cell(m.start()) else body_id
+        new_attrs = re.sub(r'charPrIDRef="\d+"', f'charPrIDRef="{tid}"', attrs, count=1)
+        changed += 1
+        return f"<hp:run{new_attrs}>{body}</hp:run>"
+
+    x2 = re.sub(r"<hp:run\b([^>]*)>(.*?)</hp:run>", _repl, x, flags=re.S)
+    return x2, changed
+
+
+def apply_fonts(hwpx_path, *, face: str = "돋움",
+                body_pt: int = 12, cell_pt: int = 8) -> dict:
+    """최종 hwpx 에 '본문 텍스트=face body_pt, 표 셀 텍스트=face cell_pt' 를 전역 적용.
+
+    반환: {ok, body_charpr, cell_charpr, runs_changed, reason?}. 실패해도 예외를
+    던지지 않고 ok=False 로 알린다(폰트 적용 실패가 빌드 전체를 막지 않게).
+    """
+    path = str(hwpx_path)
+    try:
+        with zipfile.ZipFile(path) as z:
+            infos = z.infolist()
+            blobs = {zi.filename: z.read(zi.filename) for zi in infos}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": f"open: {exc}"}
+
+    hdr_name = next((n for n in blobs if n.endswith("header.xml")), None)
+    if not hdr_name:
+        return {"ok": False, "reason": "no header.xml"}
+    header = blobs[hdr_name].decode("utf-8")
+    header2, body_id, cell_id = _augment_header(header, face, body_pt * 100, cell_pt * 100)
+    if body_id is None:
+        return {"ok": False, "reason": f"font '{face}' or base charPr not found"}
+    blobs[hdr_name] = header2.encode("utf-8")
+
+    runs_changed = 0
+    for name in list(blobs):
+        if re.search(r"section\d+\.xml$", name):
+            sx = blobs[name].decode("utf-8")
+            sx2, n = _rewrite_section_runs(sx, body_id, cell_id)
+            blobs[name] = sx2.encode("utf-8")
+            runs_changed += n
+
+    tmp = path + ".tmpfont"
+    try:
+        with zipfile.ZipFile(tmp, "w") as zf:
+            for zi in infos:  # 순서·압축방식(mimetype=stored) 보존
+                zf.writestr(zi, blobs[zi.filename])
+        os.replace(tmp, path)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            os.path.exists(tmp) and os.remove(tmp)
+        except OSError:
+            pass
+        return {"ok": False, "reason": f"write: {exc}"}
+    return {"ok": True, "body_charpr": body_id, "cell_charpr": cell_id,
+            "runs_changed": runs_changed}
+
+
+# ── 개조식 내어쓰기(hanging indent) 후처리 ───────────────────────────────────
+# 문단 앞의 도형/번호 마커(□·○·-···※·1.·(1)·가.·① 등) 폭만큼 둘째 줄 이하를
+# 들여써(내어쓰기), 마커 뒤 본문에 줄맞춤한다. 본문 문단(표 셀 제외)에만 적용.
+#
+# HWPX 여백은 <hp:switch> 로 char-unit(hp:case)·HWPUNIT(hp:default) 두 갈래를
+# 갖고, 이 문서는 DEFAULT=2×CASE 규약을 쓴다. 마커 폭 em(HWPUNIT)을 계산해
+# CASE intent=-em, DEFAULT intent=-2em 으로 두면 문서의 기존 내어쓰기 문단
+# (예: '※ …' paraPr 의 -1800/-3600)과 동일한 표기가 된다. left(왼쪽 여백)는 원본
+# 값을 유지해 단계 들여쓰기를 보존한다.
+_HANG_PREFIX = re.compile(
+    r"^(\s*(?:"
+    r"\d+(?:\.\d+)+\.?|\d+\.|\d+\)|\(\d+\)|"      # 1.1  1.  1)  (1)
+    r"[가-힣][.)]|"                               # 가. 나)
+    r"[①-⑳ⓐ-ⓩ❶-❿]|"                            # 원문자
+    r"[ㅁㅇㆍ]|"                                   # 한글 자모 불릿(ㅁ=□·ㅇ=○ 대용)
+    r"[□■▢▣○●◇◆◈△▲▽▼∙·•◦∘⁃※▪▫▶▷►◁◀‣*]|"       # 기호 불릿
+    r"[oO]|[-–—]"                                  # o 불릿 / 하이픈
+    r")\s+)"
+)
+
+
+def _prefix_em(prefix: str, body_pt: int) -> int:
+    """마커 프리픽스의 폭을 em-HWPUNIT 로. 전각=body_pt*100, 반각=body_pt*50.
+
+    한글(CJK) 문서이므로 East_Asian_Width 가 'A'(Ambiguous, 예: □·○··)인 기호도
+    전각으로 본다(전각 렌더). W/F/A → 전각, 그 외(Na/H/N, 공백·라틴 등) → 반각.
+    """
+    full = body_pt * 100
+    half = body_pt * 50
+    w = 0
+    for ch in prefix:
+        w += full if unicodedata.east_asian_width(ch) in ("W", "F", "A") else half
+    return w
+
+
+def _fetch_parapr(header_xml: str, pid: str, cache: dict) -> str | None:
+    if pid in cache:
+        return cache[pid]
+    m = re.search(rf'<hh:paraPr id="{pid}"[^>]*>.*?</hh:paraPr>', header_xml, re.S)
+    if not m:
+        m = re.search(rf'<hh:paraPr id="{pid}"[^>]*/>', header_xml)
+    cache[pid] = m.group(0) if m else None
+    return cache[pid]
+
+
+def _clone_parapr_hang(base: str, new_id: str, em: int) -> str:
+    """paraPr 를 복제해 id 를 바꾸고 두 margin 갈래의 intent 를 내어쓰기로 설정.
+
+    CASE(첫 margin) intent=-em, DEFAULT(둘째 margin) intent=-2*em. left 는 원본 유지.
+    """
+    s = re.sub(r'(<hh:paraPr\s+id=")\d+(")', rf"\g<1>{new_id}\g<2>", base, count=1)
+    n_margins = len(re.findall(r"<hh:margin>", s))
+    # margin 이 둘이면 [case=-em, default=-2em], 하나면 default 로 간주(-2em).
+    vals = [-em, -2 * em] if n_margins >= 2 else [-2 * em]
+    counter = {"i": 0}
+
+    def _one_margin(m: "re.Match") -> str:
+        blk = m.group(0)
+        v = vals[min(counter["i"], len(vals) - 1)]
+        counter["i"] += 1
+        return re.sub(r'(<hc:intent value=")-?\d+(")', rf"\g<1>{v}\g<2>", blk, count=1)
+
+    return re.sub(r"<hh:margin>.*?</hh:margin>", _one_margin, s, flags=re.S)
+
+
+def _leading_text(x: str, pos: int) -> str:
+    """<hp:p> 시작(pos) 이후, 중첩 구조(표·다음 문단) 이전까지의 본문 텍스트."""
+    bound = len(x)
+    for tok in ("<hp:tbl", "<hp:p ", "<hp:p>", "</hp:p>"):
+        j = x.find(tok, pos)
+        if j != -1:
+            bound = min(bound, j)
+    seg = x[pos:bound]
+    return "".join(re.findall(r"<hp:t[^>]*>(.*?)</hp:t>", seg, re.S))
+
+
+def apply_hanging_indent(hwpx_path, *, body_pt: int = 12) -> dict:
+    """본문 개조식 문단에 마커 폭 기준 내어쓰기(hanging indent)를 적용한다.
+
+    표 셀 안 문단은 제외한다. 반환 {ok, paras_changed, parapr_added, reason?}.
+    """
+    path = str(hwpx_path)
+    try:
+        with zipfile.ZipFile(path) as z:
+            infos = z.infolist()
+            blobs = {zi.filename: z.read(zi.filename) for zi in infos}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": f"open: {exc}"}
+
+    hdr_name = next((n for n in blobs if n.endswith("header.xml")), None)
+    if not hdr_name:
+        return {"ok": False, "reason": "no header.xml"}
+    header = blobs[hdr_name].decode("utf-8")
+    ids = [int(i) for i in re.findall(r'<hh:paraPr id="(\d+)"', header)]
+    if not ids:
+        return {"ok": False, "reason": "no paraPr"}
+    next_id = [max(ids) + 1]
+    base_cache: dict = {}
+    dedup: dict = {}
+    new_paraprs: list[str] = []
+    paras_changed = 0
+
+    for name in list(blobs):
+        if not re.search(r"section\d+\.xml$", name):
+            continue
+        x = blobs[name].decode("utf-8")
+        spans = _tc_spans(x)
+
+        def _in_cell(p: int) -> bool:
+            for s, e in spans:
+                if s <= p < e:
+                    return True
+                if s > p:
+                    break
+            return False
+
+        def _repl(m: "re.Match") -> str:
+            nonlocal paras_changed
+            attrs = m.group(1)
+            if _in_cell(m.start()):
+                return m.group(0)
+            pp = re.search(r'paraPrIDRef="(\d+)"', attrs)
+            if not pp:
+                return m.group(0)
+            lead = _leading_text(x, m.end())
+            pm = _HANG_PREFIX.match(lead)
+            if not pm:
+                return m.group(0)
+            em = _prefix_em(pm.group(1), body_pt)
+            if em <= 0:
+                return m.group(0)
+            key = (pp.group(1), em)
+            nid = dedup.get(key)
+            if nid is None:
+                base = _fetch_parapr(header, pp.group(1), base_cache)
+                if not base:
+                    return m.group(0)
+                nid = str(next_id[0])
+                next_id[0] += 1
+                new_paraprs.append(_clone_parapr_hang(base, nid, em))
+                dedup[key] = nid
+            paras_changed += 1
+            new_attrs = re.sub(r'paraPrIDRef="\d+"', f'paraPrIDRef="{nid}"', attrs, count=1)
+            return f"<hp:p{new_attrs}>"
+
+        blobs[name] = re.sub(r"<hp:p\b([^>]*)>", _repl, x).encode("utf-8")
+
+    if not new_paraprs:
+        return {"ok": True, "paras_changed": 0, "parapr_added": 0}
+
+    add = "".join(new_paraprs)
+    header = header.replace("</hh:paraProperties>", add + "</hh:paraProperties>", 1)
+    header = re.sub(
+        r'<hh:paraProperties itemCnt="(\d+)">',
+        lambda m: f'<hh:paraProperties itemCnt="{int(m.group(1)) + len(new_paraprs)}">',
+        header, count=1,
+    )
+    blobs[hdr_name] = header.encode("utf-8")
+
+    tmp = path + ".tmphang"
+    try:
+        with zipfile.ZipFile(tmp, "w") as zf:
+            for zi in infos:
+                zf.writestr(zi, blobs[zi.filename])
+        os.replace(tmp, path)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            os.path.exists(tmp) and os.remove(tmp)
+        except OSError:
+            pass
+        return {"ok": False, "reason": f"write: {exc}"}
+    return {"ok": True, "paras_changed": paras_changed, "parapr_added": len(new_paraprs)}
+
+
+# ── 마크다운 표(| a | b |) → 실제 HWPX 표 변환(후처리) ────────────────────────
+# 자동작성 초안이 텍스트로 만든 파이프 표(| 구분 | 값 | …)를, 본문 문단을 쪼개
+# 실제 표(<hp:tbl>)로 바꾼다. python-hwpx 의 add_table/set_cell_text 로 유효한 표를
+# 만들고, 그 문단 위치에 lxml 로 끼워 넣는다. 표를 이미 품은 문단은 건드리지 않는다.
+_MD_ROW = re.compile(r"^\s*\|.*\|\s*$")
+
+
+def _md_parse_row(line: str) -> list[str]:
+    s = line.strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    return [c.strip() for c in s.split("|")]
+
+
+def _md_is_sep(cells: list[str]) -> bool:
+    return bool(cells) and all(
+        re.fullmatch(r":?-{2,}:?", c.strip() or "-") for c in cells if c.strip()
+    ) and any(set(c.strip()) <= set(":-") and c.strip() for c in cells)
+
+
+def _md_blocks(text: str):
+    """텍스트를 [('text',str) | ('table',[[cell,…],…])] 블록으로 나눈다."""
+    lines = text.split("\n")
+    blocks: list = []
+    i, n = 0, len(lines)
+    while i < n:
+        if _MD_ROW.match(lines[i]) and lines[i].count("|") >= 2:
+            rows = []
+            while i < n and _MD_ROW.match(lines[i]) and lines[i].count("|") >= 2:
+                cells = _md_parse_row(lines[i])
+                i += 1
+                if _md_is_sep(cells):
+                    continue
+                rows.append(cells)
+            if len(rows) >= 2 and max(len(r) for r in rows) >= 2:
+                blocks.append(("table", rows))
+            else:  # 표로 보기 어려우면 원문 텍스트로 되돌림
+                raw = "\n".join("| " + " | ".join(r) + " |" for r in rows)
+                blocks.append(("text", raw))
+        else:
+            start = i
+            while i < n and not (_MD_ROW.match(lines[i]) and lines[i].count("|") >= 2):
+                i += 1
+            blocks.append(("text", "\n".join(lines[start:i])))
+    # 인접 text 블록 병합
+    merged: list = []
+    for kind, payload in blocks:
+        if kind == "text" and merged and merged[-1][0] == "text":
+            merged[-1] = ("text", merged[-1][1] + "\n" + payload)
+        else:
+            merged.append((kind, payload))
+    return merged
+
+
+def _p_text_el(p) -> str:
+    return "".join(t.text or "" for t in p.iter() if t.tag.endswith("}t"))
+
+
+def _has_table_el(p) -> bool:
+    return any(e.tag.endswith("}tbl") for e in p.iter())
+
+
+def _host_para_of(tbl_el):
+    el = tbl_el
+    while el is not None and not el.tag.endswith("}p"):
+        el = el.getparent()
+    return el
+
+
+def apply_markdown_tables(hwpx_path, *, max_rows: int = 200, max_cols: int = 20) -> dict:
+    """본문 문단 안의 마크다운 표를 실제 HWPX 표로 변환한다.
+
+    표를 이미 품은 문단·표 셀 내부는 제외한다. 반환 {ok, tables, reason?}.
+    """
+    try:
+        doc = open_hwpx(hwpx_path)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": f"open: {exc}"}
+
+    made = 0
+    try:
+        for si, sec in enumerate(doc.sections):
+            secel = sec.element
+            # 섹션 직속 <hp:p> 만(표 셀 내부 문단 제외). 리스트 스냅샷 후 변형.
+            for p in [c for c in list(secel) if c.tag.endswith("}p")]:
+                if _has_table_el(p):
+                    continue
+                text = _p_text_el(p)
+                if text.count("|") < 4:
+                    continue
+                blocks = _md_blocks(text)
+                if not any(b[0] == "table" for b in blocks):
+                    continue
+                pp = p.get("paraPrIDRef")
+                new_els: list = []
+                for kind, payload in blocks:
+                    if kind == "text":
+                        # 각 줄을 별도 문단으로(개조식 한 항목=한 문단 → 내어쓰기 정상 적용).
+                        for line in payload.split("\n"):
+                            if not line.strip():
+                                continue
+                            np = doc.add_paragraph(
+                                line, section_index=si,
+                                para_pr_id_ref=pp, inherit_style=True,
+                            )
+                            new_els.append(np.element)
+                    else:
+                        rows = payload[:max_rows]
+                        nc = min(max(len(r) for r in rows), max_cols)
+                        tbl = doc.add_table(len(rows), nc, section_index=si)
+                        for r, row in enumerate(rows):
+                            for c in range(nc):
+                                val = row[c] if c < len(row) else ""
+                                try:
+                                    tbl.set_cell_text(r, c, val)
+                                except Exception:  # noqa: BLE001
+                                    pass
+                        hp = _host_para_of(tbl.element)
+                        if hp is not None:
+                            new_els.append(hp)
+                        made += 1
+                # 원 문단 자리에 순서대로 삽입 후 원 문단 제거.
+                anchor = p
+                for el in new_els:
+                    if el.getparent() is not None:
+                        el.getparent().remove(el)
+                    anchor.addnext(el)
+                    anchor = el
+                secel.remove(p)
+        save_hwpx(doc, hwpx_path)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": f"convert: {exc}"}
+    return {"ok": True, "tables": made}

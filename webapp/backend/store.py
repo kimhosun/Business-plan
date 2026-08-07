@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -106,6 +107,10 @@ def output_dir(pid: str) -> Path:
     return project_dir(pid) / "output"
 
 
+def rfp_dir(pid: str) -> Path:
+    return project_dir(pid) / "rfp"
+
+
 def _project_json(pid: str) -> Path:
     return project_dir(pid) / "project.json"
 
@@ -179,6 +184,23 @@ def list_projects() -> list[dict]:
 
 def project_meta(pid: str) -> dict | None:
     return _read_json(_project_json(pid))
+
+
+def delete_project(pid: str) -> bool:
+    """프로젝트 디렉터리 전체(yaml·nodes·output·rfp 등)를 삭제한다.
+
+    pid 검증: PROJECTS_DIR 하위의 실제 디렉터리만 지운다(경로 탈출 방지).
+    """
+    pdir = project_dir(pid)
+    try:
+        # PROJECTS_DIR 바로 아래의 디렉터리인지 확인(../ 등 경로 조작 차단)
+        pdir.resolve().relative_to(config.PROJECTS_DIR.resolve())
+    except (ValueError, OSError):
+        return False
+    if not pdir.is_dir():
+        return False
+    shutil.rmtree(pdir, ignore_errors=True)
+    return not pdir.exists()
 
 
 # ── 트리 접근 ────────────────────────────────────────────────────────────────
@@ -327,6 +349,53 @@ def append_chat(pid: str, nid: str, role: str, content: str) -> list[dict]:
 def clear_chat(pid: str, nid: str) -> list[dict]:
     _write_json(_chat_path(pid, nid), [])
     return []
+
+
+# ── RFP(제안요청서/공고) 저장 ─────────────────────────────────────────────────
+def _rfp_source_path(pid: str, ext: str) -> Path:
+    return rfp_dir(pid) / f"source{ext or ''}"
+
+
+def _rfp_text_path(pid: str) -> Path:
+    return rfp_dir(pid) / "rfp.txt"
+
+
+def _rfp_meta_path(pid: str) -> Path:
+    return rfp_dir(pid) / "meta.json"
+
+
+def save_rfp(pid: str, filename: str, data: bytes) -> Path:
+    """업로드한 RFP 원본 바이트를 rfp/source.<ext> 로 저장하고 경로를 반환."""
+    ext = Path(filename or "").suffix.lower() or ".bin"
+    d = rfp_dir(pid)
+    d.mkdir(parents=True, exist_ok=True)
+    # 이전 원본(확장자 다른 경우)은 정리해 하나만 유지
+    for old in d.glob("source.*"):
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    dst = _rfp_source_path(pid, ext)
+    dst.write_bytes(data or b"")
+    return dst
+
+
+def write_rfp_text(pid: str, text: str, meta: dict) -> dict:
+    """추출한 RFP 텍스트와 메타(파일명·글자수·업로드시각)를 저장하고 메타를 반환."""
+    _write_text(_rfp_text_path(pid), text or "")
+    meta = dict(meta or {})
+    meta.setdefault("uploaded", _now())
+    meta["chars"] = len(text or "")
+    _write_json(_rfp_meta_path(pid), meta)
+    return meta
+
+
+def read_rfp_text(pid: str) -> str:
+    return _read_text(_rfp_text_path(pid), default="")
+
+
+def rfp_meta(pid: str) -> dict | None:
+    return _read_json(_rfp_meta_path(pid))
 
 
 # ── __main__ 스모크 테스트 ────────────────────────────────────────────────────

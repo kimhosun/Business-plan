@@ -11,6 +11,7 @@ const state = {
   tree: [],
   nid: null,
   node: null, // GET /nodes/{nid} 결과
+  filled: new Set(), // RFP 자동작성으로 채워진 절 nid
 };
 
 /* ------------------------------------------------------------------ */
@@ -79,7 +80,8 @@ const postJson = (obj) => ({
 
 /* ---- 엔드포인트 (ARCHITECTURE REST 계약과 1:1) ---- */
 const API = {
-  createProject: () => api("/api/projects", postJson({ use_default: true })),
+  createProject: (name) => api("/api/projects", postJson({ use_default: true, name: name || null })),
+  deleteProject: (pid) => api(`/api/projects/${pid}`, { method: "DELETE" }),
   listProjects: () => api("/api/projects"),
   getTree: (pid) => api(`/api/projects/${pid}/tree`),
   getNode: (pid, nid) => api(`/api/projects/${pid}/nodes/${nid}`),
@@ -109,6 +111,10 @@ const API = {
   previewUrl: (pid) => `/api/projects/${pid}/preview.pdf`,
   sectionHwpxUrl: (pid, nid) => `/api/projects/${pid}/nodes/${nid}/section.hwpx`,
   regulationsPdfUrl: (pid, nid) => `/api/projects/${pid}/nodes/${nid}/regulations.pdf`,
+  getRfp: (pid) => api(`/api/projects/${pid}/rfp`),
+  uploadRfp: (pid, formData) => api(`/api/projects/${pid}/rfp`, { method: "POST", body: formData }),
+  autofillRfp: (pid, sections, apply) =>
+    api(`/api/projects/${pid}/rfp/autofill`, postJson({ sections: sections || null, apply: !!apply })),
 };
 
 /* ------------------------------------------------------------------ */
@@ -257,9 +263,16 @@ async function loadProjects(selectPid) {
       sel.appendChild(el("option", { value: p.id, text: `${p.name || p.id}` }));
     });
     if (selectPid) sel.value = selectPid;
+    updateDelButton();
   } catch (e) {
     toast("프로젝트 목록 조회 실패: " + e.message, "err");
   }
+}
+
+// 삭제 버튼은 프로젝트가 선택돼 있을 때만 활성화
+function updateDelButton() {
+  const btn = $("#btn-del-project");
+  if (btn) btn.disabled = !$("#project-select").value;
 }
 
 async function openProject(pid) {
@@ -267,19 +280,25 @@ async function openProject(pid) {
   state.pid = pid;
   state.nid = null;
   state.node = null;
+  state.filled = new Set();
   $("#btn-build").disabled = false;
   $("#build-links").classList.add("hidden");
+  updateDelButton();
   showNodeEmpty();
   await loadTree();
+  refreshRfpStatus();
 }
 
 async function createProject() {
   const btn = $("#btn-new-project");
+  const nameField = $("#project-name");
+  const name = (nameField ? nameField.value : "").trim();
   btn.disabled = true;
   toast("기본 문서로 프로젝트 생성 중… (변환·추출)");
   try {
-    const res = await API.createProject();
+    const res = await API.createProject(name);
     const pid = res.pid || res.id;
+    if (nameField) nameField.value = "";
     await loadProjects(pid);
     await openProject(pid);
     toast("프로젝트 생성 완료", "ok");
@@ -287,6 +306,50 @@ async function createProject() {
     toast("프로젝트 생성 실패: " + e.message, "err");
   } finally {
     btn.disabled = false;
+  }
+}
+
+async function deleteProject() {
+  const sel = $("#project-select");
+  const pid = sel.value || state.pid;
+  if (!pid) {
+    toast("삭제할 프로젝트를 먼저 선택하세요.", "err");
+    return;
+  }
+  const opt = sel.options[sel.selectedIndex];
+  const name = opt && opt.value === pid ? opt.text : pid;
+  if (
+    !confirm(
+      `프로젝트 "${name}" 를 삭제할까요?\n` +
+        "입력·변환·빌드 산출물 등 이 프로젝트의 모든 파일이 지워지며 되돌릴 수 없습니다."
+    )
+  )
+    return;
+
+  const btn = $("#btn-del-project");
+  btn.disabled = true;
+  try {
+    await API.deleteProject(pid);
+    toast(`프로젝트 "${name}" 를 삭제했습니다.`, "ok");
+    // 현재 열려 있던 프로젝트를 지웠으면 편집 화면을 비운다
+    if (state.pid === pid) {
+      state.pid = null;
+      state.nid = null;
+      state.node = null;
+      state.filled = new Set();
+      $("#btn-build").disabled = true;
+      $("#build-links").classList.add("hidden");
+      showNodeEmpty();
+      $("#tree").innerHTML = "";
+      $("#tree").appendChild(el("p", { class: "placeholder", text: "프로젝트를 선택하거나 새로 만드세요." }));
+      setRfpStatus("");
+    }
+    await loadProjects(state.pid || "");
+    if (!state.pid) $("#project-select").value = "";
+  } catch (e) {
+    toast("삭제 실패: " + e.message, "err");
+  } finally {
+    updateDelButton();
   }
 }
 
@@ -340,16 +403,32 @@ function renderTree() {
 }
 
 function makeLeaf(node, isChapter) {
+  const isFilled = state.filled.has(node.id);
+  const kids = [
+    el("span", { class: "tree-num", text: node.label }),
+    el("span", { class: "tree-title-txt", text: node.title || "" }),
+  ];
+  if (isFilled) kids.push(el("span", { class: "tree-badge", text: "✓ 자동작성", title: "RFP 기반 자동작성됨" }));
   const leaf = el(
     "div",
     {
-      class: "tree-leaf" + (isChapter ? " chapter-leaf" : ""),
+      class: "tree-leaf" + (isChapter ? " chapter-leaf" : "") + (isFilled ? " filled" : ""),
       "data-nid": node.id,
       onclick: () => selectNode(node.id),
     },
-    [el("span", { class: "tree-num", text: node.label }), el("span", { class: "tree-title-txt", text: node.title || "" })]
+    kids
   );
   return leaf;
+}
+
+// 특정 절 leaf 에 자동작성 배지를 즉시 부여(트리 재렌더 없이).
+function markLeafFilled(nid) {
+  state.filled.add(nid);
+  const leaf = document.querySelector(`.tree-leaf[data-nid="${nid}"]`);
+  if (leaf && !leaf.classList.contains("filled")) {
+    leaf.classList.add("filled");
+    leaf.appendChild(el("span", { class: "tree-badge", text: "✓ 자동작성", title: "RFP 기반 자동작성됨" }));
+  }
 }
 
 function highlightLeaf(nid) {
@@ -715,6 +794,115 @@ async function openRegulationsPdf() {
 }
 
 /* ------------------------------------------------------------------ */
+/* RFP 업로드 → 절 자동작성                                            */
+/* ------------------------------------------------------------------ */
+function setRfpStatus(text, kind) {
+  const box = $("#rfp-status");
+  if (!box) return;
+  box.textContent = text || "";
+  box.className = "rfp-status" + (kind ? " " + kind : "") + (text ? "" : " hidden");
+}
+
+// 업로드된 RFP 가 이미 있으면 상태줄에 표시(프로젝트 열 때).
+async function refreshRfpStatus() {
+  if (!state.pid) return setRfpStatus("");
+  try {
+    const info = await API.getRfp(state.pid);
+    const m = (info && info.meta) || {};
+    if (m.filename) setRfpStatus(`RFP: ${m.filename} (${m.chars || 0}자) — 다시 올리면 재작성`, "ok");
+    else setRfpStatus("");
+  } catch (_) {
+    setRfpStatus("");
+  }
+}
+
+let rfpTimer = null;
+function startElapsed(prefix) {
+  const t0 = Date.now();
+  const tick = () => setRfpStatus(`${prefix} (${Math.round((Date.now() - t0) / 1000)}초)`, "busy");
+  tick();
+  if (rfpTimer) clearInterval(rfpTimer);
+  rfpTimer = setInterval(tick, 1000);
+}
+function stopElapsed() {
+  if (rfpTimer) clearInterval(rfpTimer);
+  rfpTimer = null;
+}
+
+async function onRfpSelected(file) {
+  if (!file) return;
+  // 프로젝트가 없으면 기본 문서로 자동 생성(자동작성 대상 절 트리가 필요).
+  if (!state.pid) {
+    setRfpStatus("프로젝트가 없어 기본 문서로 새로 생성 중…", "busy");
+    try {
+      const res = await API.createProject();
+      const pid = res.pid || res.id;
+      await loadProjects(pid);
+      $("#project-select").value = pid;
+      await openProject(pid);
+    } catch (e) {
+      setRfpStatus("프로젝트 생성 실패: " + e.message, "err");
+      return;
+    }
+  }
+
+  const label = document.querySelector(".rfp-btn");
+  const fileInput = $("#rfp-file");
+  if (label) label.classList.add("disabled");
+  if (fileInput) fileInput.disabled = true;
+
+  try {
+    // 1) 업로드 + 텍스트 추출
+    startElapsed(`RFP 업로드·분석 중… (${file.name})`);
+    const fd = new FormData();
+    fd.append("file", file);
+    const up = await API.uploadRfp(state.pid, fd);
+    stopElapsed();
+    toast(`RFP 분석 완료: ${up.chars}자 추출. 자동작성을 시작합니다.`, "ok");
+
+    // 2) 자동작성(병렬) — 대상 절 전체
+    const sections = up.sections || null;
+    const nSec = (sections && sections.length) || 10;
+    const apply = $("#rfp-apply") && $("#rfp-apply").checked;
+    startElapsed(`AI가 인터넷 조사 기반으로 자동작성 중… ${nSec}개 절 병렬 (조사 포함, 수 분 소요)`);
+    const res = await API.autofillRfp(state.pid, sections, apply);
+    stopElapsed();
+
+    const results = res.results || [];
+    results.forEach((r) => {
+      if (r.ok) markLeafFilled(r.nid);
+    });
+    const failed = results.filter((r) => !r.ok);
+    const okN = res.ok_count != null ? res.ok_count : results.filter((r) => r.ok).length;
+    setRfpStatus(
+      `자동작성 완료 — ${okN}/${results.length}개 절` +
+        (failed.length ? ` (실패: ${failed.map((r) => r.nid).join(", ")})` : "") +
+        (apply ? " · YAML 반영됨" : " · 각 절 [변환]으로 반영"),
+      failed.length ? "warn" : "ok"
+    );
+    toast(`자동작성 완료: ${okN}/${results.length}개 절`, failed.length ? "warn" : "ok");
+
+    // 현재 열린 절이 자동작성 대상이면 다시 로드해 입력칸을 갱신
+    if (state.nid && results.some((r) => r.nid === state.nid && r.ok)) {
+      await selectNode(state.nid);
+    }
+  } catch (e) {
+    stopElapsed();
+    // 405/Method Not Allowed = 실행 중인 서버에 RFP 라우트가 없음(옛 코드) → 재시작 안내
+    const stale = /method not allowed|\b405\b/i.test(e.message || "");
+    const hint = stale ? " — 서버(uvicorn)를 재시작해야 RFP 기능이 반영됩니다." : "";
+    setRfpStatus("RFP 자동작성 실패: " + e.message + hint, "err");
+    toast("RFP 자동작성 실패: " + e.message + hint, "err");
+  } finally {
+    if (label) label.classList.remove("disabled");
+    if (fileInput) {
+      fileInput.disabled = false;
+      fileInput.value = "";
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* 빌드                                                                */
 /* ------------------------------------------------------------------ */
 async function doBuild() {
@@ -733,7 +921,8 @@ async function doBuild() {
     $("#link-download").href = dl + bust;
     $("#link-preview").href = pv + bust;
     $("#build-links").classList.remove("hidden");
-    toast("빌드 완료 — 다운로드/미리보기 가능", "ok");
+    const flushed = res && res.flushed ? ` · 입력 ${res.flushed}개 절 자동 반영` : "";
+    toast("빌드 완료 — 다운로드/미리보기 가능" + flushed, "ok");
   } catch (e) {
     toast("빌드 실패: " + e.message, "err");
   } finally {
@@ -997,9 +1186,21 @@ async function importTablesXlsx(file) {
 
 function bindEvents() {
   $("#btn-new-project").addEventListener("click", createProject);
-  $("#project-select").addEventListener("change", (e) => openProject(e.target.value));
+  $("#btn-del-project").addEventListener("click", deleteProject);
+  $("#project-name").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.isComposing) createProject();
+  });
+  $("#project-select").addEventListener("change", (e) => {
+    updateDelButton();
+    openProject(e.target.value);
+  });
   $("#btn-tree-refresh").addEventListener("click", () => state.pid && loadTree());
   $("#btn-build").addEventListener("click", doBuild);
+
+  $("#rfp-file").addEventListener("change", (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (f) onRfpSelected(f);
+  });
 
   $$(".tab").forEach((t) => t.addEventListener("click", () => switchTab(t.getAttribute("data-tab"))));
 

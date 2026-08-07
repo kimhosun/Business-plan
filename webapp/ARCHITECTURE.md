@@ -38,6 +38,9 @@ webapp/data/projects/<pid>/
     chat.json          # 작성 채팅 이력 [{role,content,at}]
   output/final.hwpx    # 빌드 산출물
   output/preview.pdf   # 미리보기
+  rfp/source.<ext>     # 업로드된 RFP 원본(.pdf/.hwpx/.hwp)
+  rfp/rfp.txt          # 추출 텍스트(MAX_CHARS 로 절단)
+  rfp/meta.json        # {filename,ext,chars,uploaded}
 ```
 
 ## 모듈 책임
@@ -46,17 +49,28 @@ webapp/data/projects/<pid>/
 - `backend/store.py`  : 프로젝트/노드 파일 CRUD. `project_dir(pid)`, `read_node(pid,nid)`,
   `write_template/prompts/input/result`, `list_projects`, `load_tree`, `node_by_id(tree,nid)`.
 - `backend/pipeline.py` : 스킬 CLI 래핑(subprocess). `convert(src,dst)`, `extract(hwpx,dir)`,
-  `restore(hwpx,yaml_dir,out,template=None)`, `hwpx_to_pdf(hwpx,pdf)`(pyhwpx),
+  `restore(hwpx,yaml_dir,out,template=None)`(복원 시 `HWPX_APPLY_FONTS=1`로 **본문 돋움 12pt·표 셀
+  돋움 8pt** 전역 적용 — hwpx_common.apply_fonts, 빈 문단 제외), `hwpx_to_pdf(hwpx,pdf)`(pyhwpx),
   `default_template_from_hwpx(pid,nid)`(해당 절의 기존 마커/번호·표 양식을 template.yaml dict로),
   `merge_result_into_yaml(pid, result)`(result의 {path,marker,text}를 yaml/section_*.yaml에 기록).
 - `backend/claude_service.py` : `generate_template(description, default_template, sample_texts) -> dict`,
   `convert_input(input_text, template, prompts, targets) -> list[{path,marker,text}]`,
-  `chat_write(context, history, message) -> {reply, draft}`(절 맥락 대화로 본문 초안 작성).
+  `chat_write(context, history, message) -> {reply, draft}`(절 맥락 대화로 본문 초안 작성),
+  `draft_from_rfp(context, rfp_text) -> str`(RFP 근거 + **인터넷 조사**로 절 본문 1회 생성),
+  `segment_input(text, template, prompts, targets) -> list`(LLM 없이 초안을 targets에 결정론적 분할).
+  RFP 초안은 기본으로 **웹 조사 모드**: CLI 는 `--allowed-tools WebSearch WebFetch`(그 외 도구는 계속 차단),
+  SDK 는 서버측 `web_search` 도구로 시장·기술·표준·정책 수치를 실제 조사해 (출처,연도)와 함께 쓴다.
+  `RFP_DISABLE_RESEARCH`로 끄면 예전(자리표시) 방식. 조사는 오래 걸려 `CLAUDE_RESEARCH_TIMEOUT`(기본 600s).
   호출은 `_ask()` 하나로 모이며 **API 키 → `claude` 실행파일(`_find_cli`/`_cli_text`) → 스텁** 순 폴백.
   CLI 는 `--system-prompt` 로 시스템 프롬프트를 교체하고 도구를 모두 막아 순수 생성기로 쓴다.
   스텁으로 떨어지면 답변에 `(스텁 모드)` 와 사유가 남는다.
 - `backend/presets.py` : 절별 '작성 프롬프트' 프리셋 조립(rnd-proposal-writer `_지침/지침.json` 단일 원천).
   `preset_for(nid)`, `file_for(nid)`(절→원본 md 파일명), `skill_for(nid)`.
+- `backend/rfp.py` : RFP(제안요청서/공고) 업로드 → 절 자동작성. `extract_rfp_text(src)`
+  (.pdf=PyMuPDF, .hwpx=hwpx2yaml extract, .hwp=convert 후 동일), `autofill(pid,rfp_text,sections,apply_yaml)`
+  (절별 `claude_service.draft_from_rfp` **병렬** 생성→input.md, apply면 `segment_input`으로 나눠 yaml 병합).
+  `TARGET_SECTIONS`=[1-1,1-2,2-1,2-2,4-1,4-2,5-1,5-2,5-3,5-5], 2-2는 '기본 제안(baseline)'.
+  초안 생성만 ThreadPoolExecutor 병렬(RFP_AUTOFILL_WORKERS, 기본 5), yaml 병합은 공유파일이라 순차.
 - `backend/regulations.py` : 절별 '작성 규정' 묶음 + PDF. `regulation_for(nid, node)` 는
   서식 ※작성요령(node.guidelines), 절 지침(골격/변형/문체), 체크리스트, 참조 공통원칙 §,
   공통원칙 §0~§9 요약, 심화 지침, **출처 경로(원본 md·지침 md·지침.json·sha256)** 를 모으고,
@@ -83,6 +97,9 @@ webapp/data/projects/<pid>/
 | POST | `/api/projects/{pid}/nodes/{nid}/convert` | Claude 변환→result.yaml 저장+yaml/ 병합 → `{result:[{path,before,after,marker}]}` |
 | GET  | `/api/regulations/{nid}` | 절 nid 작성 규정(구조화 JSON) + 원본 확인 경로 |
 | GET  | `/api/projects/{pid}/nodes/{nid}/regulations.pdf` | 절 nid 작성 규정 PDF(inline). output/regulations_{nid}.pdf 로 생성 |
+| GET  | `/api/projects/{pid}/rfp` | 업로드된 RFP 메타 + 기본 대상 절 → `{meta:{filename,chars,uploaded},sections[]}` |
+| POST | `/api/projects/{pid}/rfp` | multipart `file`(.pdf/.hwpx/.hwp). 텍스트 추출·저장 → `{filename,chars,sections}` |
+| POST | `/api/projects/{pid}/rfp/autofill` | body `{sections?,apply}`. RFP 근거로 절들을 **병렬** 자동작성해 input.md 채움(apply면 yaml 병합) → `{results:[{nid,title,ok,chars,applied,error}],ok_count,total}` |
 | POST | `/api/projects/{pid}/build` | yaml2hwpx restore → final.hwpx(+pdf) → `{download,preview}` |
 | GET  | `/api/projects/{pid}/download` | final.hwpx 파일 |
 | GET  | `/api/projects/{pid}/preview.pdf` | preview.pdf 파일 |
@@ -94,7 +111,9 @@ webapp/data/projects/<pid>/
 
 ## UI 요구(프론트)
 
-- 좌: 접기/펼치기 트리. 장 "1", 절 "1.1" 라벨. 클릭 시 노드 로드.
+- 좌: 상단에 **[📥 RFP 업로드 · 자동작성]**(한글/PDF 선택 → 업로드·추출→절 병렬 자동작성, 진행 상태·경과초 표시,
+  완료 시 대상 절 leaf 에 "✓ 자동작성" 배지). "YAML 문서까지 반영" 체크박스(apply). 그 아래 접기/펼치기 트리.
+  장 "1", 절 "1.1" 라벨. 클릭 시 노드 로드.
 - 우: 제목 + **우측 상단 [📕 작성 규정 PDF]**(그 절의 규정을 새 탭에 PDF 로) + 가이드(※) 박스, 그리고 4개 패널
   1. **양식 템플릿**: template.yaml 텍스트에디터 + "AI로 양식 생성"(설명 입력→generate) + 저장
   2. **작성 프롬프트**: style/structure textarea(기본 가이드 프리필) + 저장

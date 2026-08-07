@@ -18,12 +18,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import claude_service, config, pipeline, presets, regulations, store, tables
+from . import claude_service, config, pipeline, presets, regulations, rfp, store, tables
 from .schemas import (
     ChatBody,
     GenerateBody,
     InputBody,
     PromptsBody,
+    RfpAutofillBody,
     TemplateBody,
 )
 
@@ -116,6 +117,15 @@ async def create_project(request: Request):
 @app.get("/api/projects")
 async def list_projects():
     return store.list_projects()
+
+
+@app.delete("/api/projects/{pid}")
+async def delete_project(pid: str):
+    """프로젝트와 그 파일 전체를 삭제한다. → {deleted: pid}"""
+    _require_project(pid)
+    if not store.delete_project(pid):
+        raise HTTPException(status_code=500, detail="프로젝트 삭제에 실패했습니다.")
+    return {"deleted": pid}
 
 
 @app.get("/api/projects/{pid}/tree")
@@ -374,7 +384,8 @@ def convert_node(pid: str, nid: str):
     node = _node_or_404(pid, nid)
     try:
         detail = store.read_node(pid, nid)
-        targets = list(node.get("node_paths", []) or [])
+        # 변환도 산문을 본문 필드(문단)에만 쓴다 — 표 셀은 그리드 편집 전용.
+        targets = pipeline.body_paths(pid, node.get("node_paths", []) or [])
         template = detail.get("template") or {}
         prompts = detail.get("prompts") or {}
         input_text = detail.get("input") or ""
@@ -404,10 +415,122 @@ def convert_node(pid: str, nid: str):
         raise HTTPException(status_code=500, detail=f"변환 실패: {exc}") from exc
 
 
+# ── RFP(제안요청서/공고) 업로드 → 절 자동작성 ────────────────────────────────
+@app.get("/api/projects/{pid}/rfp")
+async def get_rfp(pid: str):
+    """업로드된 RFP 메타(파일명·글자수·업로드시각)와 기본 대상 절 목록."""
+    _require_project(pid)
+    meta = store.rfp_meta(pid) or {}
+    return {"meta": meta, "sections": rfp.TARGET_SECTIONS}
+
+
+@app.post("/api/projects/{pid}/rfp")
+def upload_rfp(pid: str, file: UploadFile = File(...)):
+    """RFP 파일(.pdf/.hwpx/.hwp) 업로드 → 텍스트 추출·저장. → {filename,chars,sections}
+
+    .hwp 는 한컴 COM 변환이 필요해 수십 초 걸릴 수 있어 sync 라우트로 둔다
+    (FastAPI 가 스레드풀에서 실행 → 이벤트 루프를 막지 않음).
+    """
+    _require_project(pid)
+    filename = getattr(file, "filename", "") or ""
+    if not filename:
+        raise HTTPException(status_code=400, detail="파일이 필요합니다.")
+    suffix = Path(filename).suffix.lower()
+    if suffix not in (".pdf", ".hwpx", ".hwp"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"지원하지 않는 형식입니다: {suffix or '(없음)'} (.pdf/.hwpx/.hwp 만)",
+        )
+    data = file.file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="빈 파일입니다.")
+    try:
+        src = store.save_rfp(pid, filename, data)
+        text = rfp.extract_rfp_text(src)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"RFP 추출 실패: {exc}") from exc
+    if not text.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="RFP 에서 텍스트를 찾지 못했습니다(스캔 이미지 PDF 등일 수 있습니다).",
+        )
+    meta = store.write_rfp_text(pid, text, {"filename": filename, "ext": suffix})
+    return {"filename": filename, "chars": meta.get("chars", len(text)), "sections": rfp.TARGET_SECTIONS}
+
+
+@app.post("/api/projects/{pid}/rfp/autofill")
+def autofill_rfp(pid: str, body: RfpAutofillBody):
+    """업로드된 RFP 로 지정 절들을 병렬 자동작성해 input.md 에 채운다.
+
+    body {sections?, apply} · apply 면 yaml 병합까지. → {results:[{nid,title,ok,chars,applied,error}]}
+
+    절마다 Claude 초안을 동시에 생성하므로 sync 라우트(스레드풀)로 둔다.
+    """
+    _require_project(pid)
+    text = store.read_rfp_text(pid)
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="먼저 RFP 를 업로드하세요.")
+    try:
+        results = rfp.autofill(
+            pid, text, sections=body.sections, apply_yaml=bool(body.apply)
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"자동작성 실패: {exc}") from exc
+    ok = sum(1 for r in results if r.get("ok"))
+    return {"results": results, "ok_count": ok, "total": len(results)}
+
+
 # ── 빌드/다운로드 ─────────────────────────────────────────────────────────────
+def _iter_tree_nodes(tree: list[dict]):
+    """트리를 깊이우선으로 순회(장·절 모두)."""
+    for node in tree or []:
+        yield node
+        yield from _iter_tree_nodes(node.get("children") or [])
+
+
+def _flush_pending_inputs(pid: str) -> int:
+    """입력(input.md)만 채우고 아직 문서(yaml)에 반영하지 않은 절을 빌드 직전 자동 반영한다.
+
+    result.yaml 이 이미 있는 절(=이미 변환/반영됨)은 건드리지 않는다. 초안 전체가
+    유실 없이 들어가도록 segment_input_packed 를 쓴다. 반영한 절 수를 반환.
+    """
+    flushed = 0
+    for node in _iter_tree_nodes(store.load_tree(pid)):
+        nid = node.get("id")
+        # 산문은 본문 필드(문단)에만 — 표 셀은 그리드 편집 전용이라 제외.
+        node_paths = pipeline.body_paths(pid, node.get("node_paths", []) or [])
+        if not nid or not node_paths:
+            continue
+        try:
+            detail = store.read_node(pid, nid)
+        except Exception:  # noqa: BLE001
+            continue
+        input_text = (detail.get("input") or "").strip()
+        already = detail.get("result") or []
+        if not input_text or already:
+            continue
+        try:
+            result = claude_service.segment_input_packed(
+                detail.get("input") or "", detail.get("template") or {}, node_paths
+            )
+            if result:
+                store.write_result(pid, nid, result)
+                pipeline.merge_result_into_yaml(pid, result)
+                flushed += 1
+        except Exception:  # noqa: BLE001 - 한 절 실패가 빌드 전체를 막지 않게
+            continue
+    return flushed
+
+
 @app.post("/api/projects/{pid}/build")
 async def build_project(pid: str):
-    """yaml → final.hwpx(+preview.pdf). → {download,preview}"""
+    """yaml → final.hwpx(+preview.pdf). → {download,preview,flushed}
+
+    빌드 직전, 입력만 채우고 아직 문서에 반영 안 한 절을 자동 반영한다(사용자가 절마다
+    ④ 변환을 누르지 않아도 RFP 자동작성·채팅 초안이 최종 문서에 들어가도록).
+    """
     meta = _require_project(pid)
     try:
         source_hwpx = meta.get("source_hwpx") or str(store.project_dir(pid) / "source.hwpx")
@@ -415,6 +538,7 @@ async def build_project(pid: str):
         out_dir.mkdir(parents=True, exist_ok=True)
         final_hwpx = out_dir / "final.hwpx"
 
+        flushed = _flush_pending_inputs(pid)
         pipeline.restore(source_hwpx, store.yaml_dir(pid), final_hwpx)
 
         preview_url = ""
@@ -428,7 +552,7 @@ async def build_project(pid: str):
         download_url = f"/api/projects/{pid}/download"
         if pdf_ok:
             preview_url = f"/api/projects/{pid}/preview.pdf"
-        return {"download": download_url, "preview": preview_url}
+        return {"download": download_url, "preview": preview_url, "flushed": flushed}
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"빌드 실패: {exc}") from exc
 
@@ -457,6 +581,7 @@ def download_section_hwpx(pid: str, nid: str):
         out_dir = store.output_dir(pid)
         out_dir.mkdir(parents=True, exist_ok=True)
         final_hwpx = out_dir / "final.hwpx"
+        _flush_pending_inputs(pid)
         pipeline.restore(source_hwpx, store.yaml_dir(pid), final_hwpx)
         return FileResponse(
             str(final_hwpx),
