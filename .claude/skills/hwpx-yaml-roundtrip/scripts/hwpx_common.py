@@ -449,6 +449,178 @@ def apply_fonts(hwpx_path, *, face: str = "돋움",
             "runs_changed": runs_changed}
 
 
+# ── 표 레이아웃: 셀 글자 가로 가운데정렬 + 표 폭을 용지(본문영역) 폭에 맞춤 ──────
+# 최종 hwpx 의 모든 표에 대해:
+#   (1) 셀 안 문단 정렬을 CENTER 로 (header.xml 에 center paraPr 추가 후 tc 안 <hp:p>
+#       의 paraPrIDRef 를 그것으로 치환). 세로정렬은 원본 subList vertAlign 을 따름.
+#   (2) 표 폭을 본문영역 폭(pagePr.width - margin.left - right - gutter)에 맞춤
+#       — 표 <hp:sz width> 를 본문폭으로, 모든 <hp:cellSz width> 를 같은 비율로 스케일.
+# 순수 문자열 치환(폰트 적용과 동일 방식). 실패해도 예외 없이 ok=False.
+def _tbl_spans(x: str) -> list[tuple[int, int]]:
+    """최상위 표(<hp:tbl>…</hp:tbl>) 구간(중첩표는 이 구간에 포함)."""
+    spans: list[tuple[int, int]] = []
+    depth = 0
+    start: int | None = None
+    for m in re.finditer(r"<hp:tbl\b[^>]*>|</hp:tbl>", x):
+        tok = m.group(0)
+        if tok.startswith("</hp:tbl"):
+            depth -= 1
+            if depth <= 0 and start is not None:
+                spans.append((start, m.end()))
+                start, depth = None, 0
+        elif tok.endswith("/>"):
+            continue
+        else:
+            if depth == 0:
+                start = m.start()
+            depth += 1
+    return spans
+
+
+def _augment_header_center(header_xml: str):
+    """base paraPr 를 복제해 가로 CENTER paraPr 를 추가하고 (header, center_id)."""
+    ids = [int(i) for i in re.findall(r'<hh:paraPr\s+id="(\d+)"', header_xml)]
+    if not ids:
+        return header_xml, None
+    base_id = 0 if 0 in ids else ids[0]
+    bm = re.search(rf'<hh:paraPr\s+id="{base_id}"[^>]*>.*?</hh:paraPr>', header_xml, re.S)
+    if not bm:
+        return header_xml, None
+    cid = str(max(ids) + 1)
+    block = re.sub(r'(<hh:paraPr\s+id=")\d+(")', rf"\g<1>{cid}\g<2>", bm.group(0), count=1)
+    if re.search(r"<hh:align\b[^>]*/>", block):
+        block = re.sub(r'(<hh:align\b[^>]*\bhorizontal=")[A-Z_]+(")',
+                       r"\g<1>CENTER\g<2>", block, count=1)
+    else:  # align 요소가 없으면 추가
+        block = block.replace(">", '><hh:align horizontal="CENTER" vertical="BASELINE"/>', 1)
+    header_xml = header_xml.replace("</hh:paraProperties>", block + "</hh:paraProperties>", 1)
+    header_xml = re.sub(
+        r'<hh:paraProperties itemCnt="(\d+)">',
+        lambda m: f'<hh:paraProperties itemCnt="{int(m.group(1)) + 1}">',
+        header_xml, count=1,
+    )
+    return header_xml, cid
+
+
+def _center_cells(x: str, center_id: str) -> tuple[str, int]:
+    """표 셀(<hp:tc>) 안 <hp:p> 의 paraPrIDRef 를 center paraPr 로 치환."""
+    spans = _tc_spans(x)
+    changed = 0
+
+    def _in_cell(pos: int) -> bool:
+        for s, e in spans:
+            if s <= pos < e:
+                return True
+            if s > pos:
+                break
+        return False
+
+    def _repl(m: "re.Match") -> str:
+        nonlocal changed
+        if not _in_cell(m.start()):
+            return m.group(0)
+        if 'paraPrIDRef="' not in m.group(0):
+            return m.group(0)
+        changed += 1
+        return re.sub(r'paraPrIDRef="\d+"', f'paraPrIDRef="{center_id}"', m.group(0), count=1)
+
+    x2 = re.sub(r"<hp:p\b[^>]*>", _repl, x)
+    return x2, changed
+
+
+def _text_width(section_xml: str) -> int | None:
+    pp = re.search(r'<hp:pagePr\b[^>]*\bwidth="(\d+)"', section_xml)
+    mg = re.search(r"<hp:margin\b[^>]*/>", section_xml)
+    if not pp or not mg:
+        return None
+    W = int(pp.group(1))
+
+    def g(attr: str) -> int:
+        m = re.search(rf'\b{attr}="(\d+)"', mg.group(0))
+        return int(m.group(1)) if m else 0
+
+    tw = W - g("left") - g("right") - g("gutter")
+    return tw if tw > 0 else None
+
+
+def _fit_tables(x: str, text_width: int) -> tuple[str, int]:
+    """각 표 폭을 text_width 로 맞추고 cellSz 폭을 같은 비율로 스케일."""
+    spans = _tbl_spans(x)
+    out = x
+    changed = 0
+    for s, e in reversed(spans):          # 뒤에서부터(인덱스 보존)
+        seg = x[s:e]
+        szm = re.search(r'<hp:sz\s+width="(\d+)"', seg)
+        if not szm:
+            continue
+        cur = int(szm.group(1))
+        if cur <= 0:
+            continue
+        f = text_width / cur
+        if abs(f - 1.0) < 0.002:          # 이미 거의 맞음
+            continue
+        seg = seg[:szm.start()] + \
+            re.sub(r'width="\d+"', f'width="{text_width}"', seg[szm.start():szm.end()], 1) + \
+            seg[szm.end():]
+        seg = re.sub(
+            r'(<hp:cellSz\s+width=")(\d+)(")',
+            lambda m: m.group(1) + str(max(1, round(int(m.group(2)) * f))) + m.group(3),
+            seg,
+        )
+        out = out[:s] + seg + out[e:]
+        changed += 1
+    return out, changed
+
+
+def apply_table_layout(hwpx_path, *, center: bool = True, fit_width: bool = True) -> dict:
+    """최종 hwpx 의 모든 표에 '셀 가로 가운데정렬 + 표 폭 본문영역 맞춤' 적용."""
+    path = str(hwpx_path)
+    try:
+        with zipfile.ZipFile(path) as z:
+            infos = z.infolist()
+            blobs = {zi.filename: z.read(zi.filename) for zi in infos}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": f"open: {exc}"}
+
+    center_id = None
+    if center:
+        hdr_name = next((n for n in blobs if n.endswith("header.xml")), None)
+        if hdr_name:
+            header2, center_id = _augment_header_center(blobs[hdr_name].decode("utf-8"))
+            if center_id is not None:
+                blobs[hdr_name] = header2.encode("utf-8")
+
+    cells_centered = tables_fit = 0
+    for name in list(blobs):
+        if not re.search(r"section\d+\.xml$", name):
+            continue
+        sx = blobs[name].decode("utf-8")
+        if center and center_id is not None:
+            sx, n = _center_cells(sx, center_id)
+            cells_centered += n
+        if fit_width:
+            tw = _text_width(sx)
+            if tw:
+                sx, m = _fit_tables(sx, tw)
+                tables_fit += m
+        blobs[name] = sx.encode("utf-8")
+
+    tmp = path + ".tmptbl"
+    try:
+        with zipfile.ZipFile(tmp, "w") as zf:
+            for zi in infos:
+                zf.writestr(zi, blobs[zi.filename])
+        os.replace(tmp, path)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            os.path.exists(tmp) and os.remove(tmp)
+        except OSError:
+            pass
+        return {"ok": False, "reason": f"write: {exc}"}
+    return {"ok": True, "center_parapr": center_id,
+            "cells_centered": cells_centered, "tables_fit": tables_fit}
+
+
 # ── 개조식 내어쓰기(hanging indent) 후처리 ───────────────────────────────────
 # 문단 앞의 도형/번호 마커(□·○·-···※·1.·(1)·가.·① 등) 폭만큼 둘째 줄 이하를
 # 들여써(내어쓰기), 마커 뒤 본문에 줄맞춤한다. 본문 문단(표 셀 제외)에만 적용.

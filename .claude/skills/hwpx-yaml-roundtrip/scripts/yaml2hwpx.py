@@ -37,6 +37,7 @@ from hwpx_common import (  # noqa: E402
     charpr_heights,
     pick_body_charpr,
     apply_fonts,
+    apply_table_layout,
     apply_hanging_indent,
     apply_markdown_tables,
 )
@@ -155,6 +156,15 @@ def restore(hwpx: str, yaml_dir: str, out: str, template: str | None = None) -> 
                   f"(runs={info.get('runs_changed')})")
         else:
             print(f"[yaml2hwpx] font apply skipped: {info.get('reason')}")
+
+    # 표 레이아웃: 셀 글자 가로 가운데정렬 + 표 폭을 용지(본문영역) 폭에 맞춤(기본 OFF, 웹앱이 켬).
+    if os.environ.get("HWPX_TABLE_LAYOUT", "0") not in ("0", "false", "False", ""):
+        ti = apply_table_layout(out, center=True, fit_width=True)
+        if ti.get("ok"):
+            print(f"[yaml2hwpx] table layout applied: 셀 가운데정렬 {ti.get('cells_centered')}개, "
+                  f"표 폭맞춤 {ti.get('tables_fit')}개")
+        else:
+            print(f"[yaml2hwpx] table layout skipped: {ti.get('reason')}")
 
     # 개조식 내어쓰기(마커 폭 기준 hanging indent) — 본문 문단에 적용(기본 OFF, 웹앱이 켬).
     if os.environ.get("HWPX_HANGING_INDENT", "0") not in ("0", "false", "False", ""):
