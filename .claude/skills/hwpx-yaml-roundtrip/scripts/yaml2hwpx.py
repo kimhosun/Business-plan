@@ -38,6 +38,7 @@ from hwpx_common import (  # noqa: E402
     pick_body_charpr,
     apply_fonts,
     apply_table_layout,
+    collect_sources,
     apply_hanging_indent,
     apply_markdown_tables,
 )
@@ -132,6 +133,15 @@ def restore(hwpx: str, yaml_dir: str, out: str, template: str | None = None) -> 
                     fail_paths.append(f"{path} -> {type(exc).__name__}: {exc}")
 
     save_hwpx(doc, out)
+
+    # 본문 곳곳의 출처(인용)를 모아 문서 맨 끝 '참고자료' 목록으로 (글꼴/내어쓰기 적용 전에 먼저).
+    if os.environ.get("HWPX_COLLECT_SOURCES", "0") not in ("0", "false", "False", ""):
+        cs = collect_sources(out)
+        if cs.get("ok"):
+            print(f"[yaml2hwpx] sources collected: {cs.get('sources')}건 → 맨 끝 참고자료 "
+                  f"(본문 정리 {cs.get('changed')}문단)")
+        else:
+            print(f"[yaml2hwpx] source collect skipped: {cs.get('reason')}")
 
     # 마크다운 표(| a | b |) → 실제 HWPX 표 (글꼴 적용 전에 먼저 — 새 셀도 8pt 적용되게).
     if os.environ.get("HWPX_MD_TABLES", "0") not in ("0", "false", "False", ""):

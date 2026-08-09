@@ -91,6 +91,8 @@ def restore(
     env.setdefault("HWPX_CELL_PT", "8")
     # 표: 셀 글자 가로 가운데정렬 + 표 폭을 용지(본문영역) 폭에 맞춤
     env.setdefault("HWPX_TABLE_LAYOUT", "1")
+    # 본문 곳곳의 출처(인용)를 문서 맨 끝 '참고자료' 목록으로 취합
+    env.setdefault("HWPX_COLLECT_SOURCES", "1")
     # 개조식 문단 마커(□·○·- 등) 기준 자동 내어쓰기
     env.setdefault("HWPX_HANGING_INDENT", "1")
     # 마크다운 표(| a | b |) → 실제 HWPX 표

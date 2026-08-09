@@ -502,8 +502,22 @@ def _augment_header_center(header_xml: str):
     return header_xml, cid
 
 
+# 개조식 불릿·번호로 시작하는 셀 문단(예: '◦ …', '- …', '① …', '(1) …')은
+# 좌측 정렬 본문이므로 가운데정렬에서 제외한다. 짧은 라벨·숫자·머리행은 계속 가운데.
+_CELL_BULLET_LEAD = re.compile(
+    r"^\s*(?:"
+    r"[①-⑳ⓐ-ⓩ❶-❿]"                                # 원문자
+    r"|[□■▢▣○●◇◆◈△▲▽▼∙·•◦∘⁃▪▫▶▷►◁◀‣※]"           # 기호 불릿(※ 포함)
+    r"|[-–—]\s"                                     # 하이픈 불릿(뒤 공백 필수: 음수는 제외)
+    r"|\d+[.)]\s|\(\d+\)\s|[가-힣][.)]\s"           # 1. 1) (1) 가.
+    r")"
+)
+_CELL_PROSE_MINLEN = 40  # 이보다 길면 라벨이 아니라 산문으로 보고 가운데정렬 제외
+
+
 def _center_cells(x: str, center_id: str) -> tuple[str, int]:
-    """표 셀(<hp:tc>) 안 <hp:p> 의 paraPrIDRef 를 center paraPr 로 치환."""
+    """표 셀(<hp:tc>) 안 <hp:p> 의 paraPrIDRef 를 center paraPr 로 치환.
+    단, 개조식 불릿/번호로 시작하거나 긴 산문 셀은 원래 정렬(좌측)을 보존한다."""
     spans = _tc_spans(x)
     changed = 0
 
@@ -521,6 +535,10 @@ def _center_cells(x: str, center_id: str) -> tuple[str, int]:
             return m.group(0)
         if 'paraPrIDRef="' not in m.group(0):
             return m.group(0)
+        lead = _leading_text(x, m.end())
+        if lead:
+            if _CELL_BULLET_LEAD.match(lead) or len(lead.strip()) > _CELL_PROSE_MINLEN:
+                return m.group(0)  # 불릿/산문 셀 → 좌측 정렬 유지
         changed += 1
         return re.sub(r'paraPrIDRef="\d+"', f'paraPrIDRef="{center_id}"', m.group(0), count=1)
 
@@ -619,6 +637,115 @@ def apply_table_layout(hwpx_path, *, center: bool = True, fit_width: bool = True
         return {"ok": False, "reason": f"write: {exc}"}
     return {"ok": True, "center_parapr": center_id,
             "cells_centered": cells_centered, "tables_fit": tables_fit}
+
+
+# ── 출처(인용) 취합 → 문서 맨 끝 '참고자료' 목록 ─────────────────────────────
+# 본문 곳곳의 인라인 출처 (출처: 기관, 2024)·(기관, 2024) 와 각 절 끝의 [출처] 목록을
+# 모아, 중복 제거 후 문서 맨 끝(마지막 섹션 끝)에 '출처 및 참고자료' 목록으로 붙인다.
+# 인라인 출처는 문장에서 제거하고, [출처] 블록 문단은 비운다. python-hwpx 로 수행.
+# 명시 키워드는 '출처/Source'만(템플릿의 "(참고…)" 오탐 방지). 그 외에는
+# 이름+콤마+연도가 있는 괄호만 인용으로 본다.
+_CIT_INLINE = re.compile(
+    r"\(\s*(?:출처|Source|source)\s*[:：]?\s*([^()]+?)\s*\)"                # (출처: …)
+    r"|\(\s*([^()]*?[가-힣A-Za-z][^()]*?,\s*(?:19|20)\d{2}[^()]*?)\s*\)"    # (기관, 2024)
+)
+_CIT_BLOCK = re.compile(r"\[\s*출처\s*\]\s*(.*)$", re.S)
+_URL_RE = re.compile(r"https?://\S+")
+
+
+def _norm_source(s: str) -> str:
+    s = re.sub(r"\s+", " ", (s or "").strip())
+    return s.strip(" .,;·-—")
+
+
+def _split_sources(tail: str) -> list[str]:
+    """[출처] 뒤 문자열을 개별 출처로 분리(줄바꿈/·/;/, 및 URL 경계)."""
+    parts = re.split(r"[\n;·]|(?<=\S),(?=\s*(?:[가-힣A-Za-z]|https?))", tail)
+    out = []
+    for p in parts:
+        p = _norm_source(p)
+        if p and p not in ("-", "—"):
+            out.append(p)
+    return out
+
+
+def collect_sources(hwpx_path, *, heading: str = "출처 및 참고자료",
+                    strip_inline: bool = True) -> dict:
+    """본문 인용/출처를 모아 문서 맨 끝에 참고자료 목록으로 추가. 예외 없이 dict 반환."""
+    path = str(hwpx_path)
+    try:
+        doc = open_hwpx(path)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": f"open: {exc}"}
+
+    sources: list[str] = []
+    seen: set[str] = set()
+
+    def _add(raw: str) -> None:
+        n = _norm_source(raw)
+        if n and n.lower() not in seen:
+            seen.add(n.lower())
+            sources.append(n)
+
+    def _walk(paras):
+        for p in paras:
+            yield p
+            for t in p.tables:
+                done = set()
+                for r in range(t.row_count):
+                    for c in range(t.column_count):
+                        cell = t.cell(r, c)
+                        addr = getattr(cell, "address", (r, c)) or (r, c)
+                        key = (int(addr[0]), int(addr[1]))
+                        if key in done:
+                            continue
+                        done.add(key)
+                        yield from _walk(cell.paragraphs)
+
+    changed = 0
+    for sec in doc.sections:
+        for para in _walk(sec.paragraphs):
+            txt = para.text or ""
+            if not txt.strip():
+                continue
+            # 1) [출처] 블록 문단 → 통째로 취합 후 비움
+            bm = _CIT_BLOCK.search(txt)
+            if bm:
+                for s in _split_sources(bm.group(1)):
+                    _add(s)
+                head = txt[:bm.start()].rstrip()
+                if strip_inline and head != txt:
+                    para.text = head
+                    changed += 1
+                continue
+            # 2) 인라인 (출처…)·(기관, 연도) 취합 후 문장에서 제거
+            found = _CIT_INLINE.findall(txt)
+            if not found:
+                continue
+            for g1, g2 in found:
+                _add(g1 or g2)
+            if strip_inline:
+                new = _CIT_INLINE.sub("", txt)
+                new = re.sub(r"\s+([,.·])", r"\1", new)     # 괄호 제거로 생긴 공백 정리
+                new = re.sub(r"[ \t]{2,}", " ", new).strip()
+                if new != txt:
+                    para.text = new
+                    changed += 1
+
+    if not sources:
+        return {"ok": True, "sources": 0, "changed": 0, "reason": "no sources"}
+
+    sec = doc.sections[-1]
+    sec.add_paragraph().text = ""
+    sec.add_paragraph().text = f"□ {heading}"
+    for i, s in enumerate(sources, 1):
+        sec.add_paragraph().text = f"{i}. {s}"
+
+    try:
+        save_hwpx(doc, path)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": f"save: {exc}"}
+    return {"ok": True, "sources": len(sources), "changed": changed}
 
 
 # ── 개조식 내어쓰기(hanging indent) 후처리 ───────────────────────────────────
@@ -746,6 +873,33 @@ def apply_hanging_indent(hwpx_path, *, body_pt: int = 12) -> dict:
             if not pp:
                 return m.group(0)
             lead = _leading_text(x, m.end())
+            # 다중행 문단(개조식 여러 항목이 줄바꿈으로 한 문단에 묶임): 단일 마커
+            # 내어쓰기가 부적합하다. 특히 템플릿 슬롯에서 물려받은 과도한 내어쓰기
+            # (예: paraPr intent -20129) 때문에 ○/- 줄이 밀려 보이는 문제가 있으므로,
+            # 이런 문단의 첫줄 내어쓰기를 0 으로 정규화한다(줄 내 들여쓰기는 본문
+            # 선행 공백으로 유지). 단일행 개조식 문단은 아래 기존 로직대로 처리.
+            p_close = x.find("</hp:p>", m.end())
+            region = x[m.end(): p_close if p_close != -1 else len(x)]
+            multiline = ("\n" in lead) or ("\r" in lead) or ("<hp:lineBreak" in region)
+            if multiline:
+                base = _fetch_parapr(header, pp.group(1), base_cache)
+                if base and any(
+                    abs(int(v)) > 4000
+                    for v in re.findall(r'<hc:intent value="(-?\d+)"', base)
+                ):
+                    key = (pp.group(1), 0)
+                    nid = dedup.get(key)
+                    if nid is None:
+                        nid = str(next_id[0])
+                        next_id[0] += 1
+                        new_paraprs.append(_clone_parapr_hang(base, nid, 0))
+                        dedup[key] = nid
+                    paras_changed += 1
+                    new_attrs = re.sub(
+                        r'paraPrIDRef="\d+"', f'paraPrIDRef="{nid}"', attrs, count=1
+                    )
+                    return f"<hp:p{new_attrs}>"
+                return m.group(0)
             pm = _HANG_PREFIX.match(lead)
             if not pm:
                 return m.group(0)
