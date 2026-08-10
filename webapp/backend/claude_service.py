@@ -166,6 +166,13 @@ def _apply_markers(
         except Exception:  # noqa: BLE001 - 마커 계산 실패해도 text는 보존
             pass
 
+    # 그림/차트 세그먼트(```chart… · ![](…))에는 마커를 붙이지 않는다 —
+    # "□ ```chart" 처럼 되면 그림 변환(apply_markdown_images)의 펜스/이미지 감지가 깨진다.
+    for n in nodes:
+        first = next((ln for ln in (n.get("text") or "").splitlines() if ln.strip()), "")
+        if first.lstrip().startswith("```") or re.match(r"^\s*!\[.*\]\(", first):
+            n["marker"] = ""
+
     return [
         {
             "path": n["path"],
@@ -176,18 +183,51 @@ def _apply_markers(
     ]
 
 
-def _split_segments(input_text: str) -> list[str]:
-    """입력을 비어있지 않은 문단/줄로 분할한다.
-
-    빈 줄 기준 문단 분할을 우선하고, 문단이 1개뿐이면 줄 단위로 폴백한다.
-    """
-    text = input_text or ""
+def _split_plain(text: str) -> list[str]:
+    """빈 줄 기준 문단 분할을 우선하고, 문단이 1개뿐이면 줄 단위로 폴백한다."""
     paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
     if len(paras) <= 1:
         lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
         if len(lines) > len(paras):
             return lines
     return paras
+
+
+_FENCE_OPEN_RE = re.compile(r"^\s*```")
+_FENCE_CLOSE_RE = re.compile(r"^\s*```\s*$")
+
+
+def _split_segments(input_text: str) -> list[str]:
+    """입력을 비어있지 않은 문단/줄로 분할한다.
+
+    ```…``` 코드펜스 블록(예: ```chart)은 한 세그먼트로 원자 보존해, 문단/줄 분할이나
+    packed 매핑이 여러 문단으로 쪼개 그림 변환을 깨뜨리지 않게 한다. 펜스 밖 텍스트는
+    기존 규칙(_split_plain)대로 나눈다.
+    """
+    text = input_text or ""
+    if "```" not in text:
+        return _split_plain(text)
+    lines = text.split("\n")
+    segs: list[str] = []
+    buf: list[str] = []
+    i, n = 0, len(lines)
+    while i < n:
+        if _FENCE_OPEN_RE.match(lines[i]):
+            j = i + 1
+            while j < n and not _FENCE_CLOSE_RE.match(lines[j]):
+                j += 1
+            if j < n:  # 닫힌 펜스 [i..j] — 통째로 한 세그먼트
+                if buf:
+                    segs.extend(_split_plain("\n".join(buf))); buf = []
+                block = "\n".join(lines[i:j + 1]).strip()
+                if block:
+                    segs.append(block)
+                i = j + 1
+                continue
+        buf.append(lines[i]); i += 1
+    if buf:
+        segs.extend(_split_plain("\n".join(buf)))
+    return [s for s in segs if s.strip()]
 
 
 # ── 스텁 구현 ────────────────────────────────────────────────────────────────
@@ -215,6 +255,22 @@ def _extract_fenced(text: str, langs: tuple[str, ...]) -> str:
     if m:
         return m.group(1).strip()
     return text.strip()
+
+
+def _unwrap_fence(text: str) -> str:
+    """출력 '전체'를 감싼 바깥 코드펜스만 벗긴다(내부 ```chart 블록은 보존).
+
+    본문(비펜스 출력)에 ```chart 블록이 섞이므로, _extract_fenced 로 중간을 잘라내지
+    않도록 첫 줄이 ```lang, 마지막 줄이 ``` 일 때만 그 두 줄을 제거한다.
+    """
+    s = (text or "").strip()
+    if not s.startswith("```"):
+        return s
+    lines = s.split("\n")
+    if len(lines) >= 2 and re.fullmatch(r"```[\w-]*", lines[0].strip()) \
+            and lines[-1].strip() == "```":
+        return "\n".join(lines[1:-1]).strip()
+    return s
 
 
 # ── claude 실행파일(Claude Code CLI) 경로 ────────────────────────────────────
@@ -655,6 +711,33 @@ _RFP_SYSTEM_NORESEARCH = (
     "4) 절 제목·머리말·해설 없이 본문 문단만 출력한다. 코드펜스로 감싸지 않는다."
 )
 
+# 그림·차트 자동삽입 지침 — 파이프라인(apply_markdown_images)이 아래 마커를 실제
+# HWPX 그림개체로 바꾼다. draft 안에 그대로 쓰면 된다(코드펜스 밖 본문 흐름 속에).
+_CHART_GUIDE = (
+    "\n그림·도표(자동 변환)\n"
+    "- 정량 데이터(시장규모·성장률·연도별 추이·구성비 등)는 표뿐 아니라 '차트'로도 넣을 수 있다. "
+    "본문 흐름 안에 아래처럼 ```chart 펜스 블록을 그대로 쓰면 파이프라인이 실제 그래프 그림으로 "
+    "바꿔 넣는다(그 아래에 <그림 N> 캡션·출처도 자동 생성):\n"
+    "```chart\n"
+    "type: bar        # bar|barh|line|pie\n"
+    "title: 국내 부유식 해상풍력 시장 규모 (억원)\n"
+    "x: [2023, 2024, 2025, 2030]\n"
+    "y: [120, 180, 260, 900]\n"
+    "ylabel: 억원\n"
+    "source: 한국에너지공단(2025)\n"
+    "```\n"
+    "- 값은 (조사/RFP로) 확인한 실제 수치만 넣는다. 근거가 없으면 차트를 만들지 않는다. "
+    "다계열은 series: {계열명: [값,…]} 로, 원그래프는 type: pie 로 쓴다."
+)
+_IMAGE_GUIDE = (
+    "\n- 조사 중 이 절에 꼭 맞는 그림/도표(개념도·사진·그래프)를 찾으면, 직접 열리는 이미지 URL을 "
+    "한 줄로 넣고 바로 다음 줄에 출처를 적는다(파이프라인이 내려받아 그림으로 삽입한다):\n"
+    "![부유식 해상풍력 개념도](https://example.org/figure.png)\n"
+    "출처: 기관명(연도)\n"
+    "  URL은 실제 이미지 파일(.png/.jpg/.gif 등)로 직접 열리는 것만, 확실할 때만 넣는다"
+    "(웹페이지·검색결과 링크는 넣지 않는다)."
+)
+
 
 def _rfp_context_block(context: dict) -> str:
     """절 맥락(제목·작성요령·양식·문체·구성)을 시스템 프롬프트 꼬리로. RFP 원문 제외."""
@@ -691,7 +774,8 @@ def _stub_draft_from_rfp(context: dict, rfp_text: str, reason: str = "") -> str:
 def _claude_draft_from_rfp(context: dict, rfp_text: str) -> str:
     note = (context or {}).get("note") or ""
     research = _rfp_research_enabled()
-    system = (_RFP_SYSTEM_RESEARCH if research else _RFP_SYSTEM_NORESEARCH)
+    system = (_RFP_SYSTEM_RESEARCH + _CHART_GUIDE + _IMAGE_GUIDE) if research \
+        else (_RFP_SYSTEM_NORESEARCH + _CHART_GUIDE)
     ask_text = (
         "먼저 이 절 주제의 최신 시장·기술·표준·정책 수치를 인터넷으로 조사한 뒤, "
         "조사한 근거와 (출처, 연도)를 반영해 정량적으로 작성하라."
@@ -710,8 +794,8 @@ def _claude_draft_from_rfp(context: dict, rfp_text: str) -> str:
         allow_tools=_RFP_RESEARCH_TOOLS if research else None,
         timeout=_research_timeout() if research else None,
     )
-    # 모델이 실수로 코드펜스를 씌우면 벗겨 본문만 취한다.
-    body = _extract_fenced(raw, ("text", "markdown", "md")).strip()
+    # 모델이 실수로 전체를 코드펜스로 씌우면 바깥 펜스만 벗긴다(내부 ```chart 는 보존).
+    body = _unwrap_fence(raw)
     return body or raw.strip()
 
 

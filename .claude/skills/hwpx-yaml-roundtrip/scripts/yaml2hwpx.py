@@ -41,6 +41,7 @@ from hwpx_common import (  # noqa: E402
     collect_sources,
     apply_hanging_indent,
     apply_markdown_tables,
+    apply_markdown_images,
 )
 
 
@@ -150,6 +151,20 @@ def restore(hwpx: str, yaml_dir: str, out: str, template: str | None = None) -> 
             print(f"[yaml2hwpx] markdown tables -> hwpx tables: {mt.get('tables')}")
         else:
             print(f"[yaml2hwpx] markdown table convert skipped: {mt.get('reason')}")
+
+    # 마크다운 그림/차트(```chart · ![](url)) → 실제 HWPX 그림개체 (글꼴 적용 전에 —
+    # 캡션 문단도 글꼴/내어쓰기 적용되게). 기본 OFF, 웹앱이 HWPX_MD_IMAGES=1 로 켠다.
+    if os.environ.get("HWPX_MD_IMAGES", "0") not in ("0", "false", "False", ""):
+        try:
+            wmm = float(os.environ.get("HWPX_IMG_WIDTH_MM", "140"))
+        except ValueError:
+            wmm = 140.0
+        mi = apply_markdown_images(out, default_width_mm=wmm)
+        if mi.get("ok"):
+            print(f"[yaml2hwpx] markdown images -> hwpx pics: 차트 {mi.get('charts')}개, "
+                  f"이미지 {mi.get('images')}개 (실패 {mi.get('failed')}개)")
+        else:
+            print(f"[yaml2hwpx] markdown image convert skipped: {mi.get('reason')}")
 
     # 전역 글꼴/크기 적용: 본문=돋움 12pt, 표 셀=돋움 8pt.
     # 기본은 OFF(순수 왕복 무손실 보존) — 사용하려면 HWPX_APPLY_FONTS=1 로 켠다(웹앱이 켬).

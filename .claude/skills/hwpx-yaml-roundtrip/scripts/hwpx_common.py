@@ -1049,9 +1049,9 @@ def apply_markdown_tables(hwpx_path, *, max_rows: int = 200, max_cols: int = 20)
                 for kind, payload in blocks:
                     if kind == "text":
                         # 각 줄을 별도 문단으로(개조식 한 항목=한 문단 → 내어쓰기 정상 적용).
-                        for line in payload.split("\n"):
-                            if not line.strip():
-                                continue
+                        # 단, ```chart…``` 펜스·![](){+출처}는 한 문단으로 유지 —
+                        # 뒤이어 도는 apply_markdown_images 가 그림으로 변환할 수 있게.
+                        for line in _split_para_chunks(payload):
                             np = doc.add_paragraph(
                                 line, section_index=si,
                                 para_pr_id_ref=pp, inherit_style=True,
@@ -1084,3 +1084,486 @@ def apply_markdown_tables(hwpx_path, *, max_rows: int = 200, max_cols: int = 20)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "reason": f"convert: {exc}"}
     return {"ok": True, "tables": made}
+
+
+# ── 마크다운 그림/차트(![](url) · ```chart) → 실제 HWPX 그림개체 변환(후처리) ────
+# 자동작성 초안 본문의 두 가지 마커를 실제 <hp:pic> 그림으로 바꾼다.
+#   1) 데이터 차트: ```chart ... ``` 펜스 블록 → matplotlib 로 PNG 렌더.
+#   2) 온라인/로컬 이미지: ![캡션](URL 또는 경로) → 다운로드/읽기 후 PNG 로 임베드.
+# 각 그림 아래에 <그림 N> 캡션(+출처) 문단을 붙인다. python-hwpx add_image 로 BinData·
+# manifest·header 를 등록하고(단, 한컴이 인식하도록 manifest opf:item 에 isEmbeded="1"
+# 를 덧붙인다), Hancom 이 만든 pic 구조를 본떠 <hp:pic> 를 직접 구성해 lxml addnext 로
+# 원 문단 자리에 끼운다. 표 셀 내부·표를 이미 품은 문단은 건드리지 않는다.
+_HP_NS = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+_HC_NS = "http://www.hancom.co.kr/hwpml/2011/core"
+_OPF_NS = "http://www.idpf.org/2007/opf/"
+_HWPUNIT_PER_MM = 7200.0 / 25.4  # HWPUNIT: 7200 per inch
+
+_MD_IMG = re.compile(r"^\s*!\[(?P<alt>.*?)\]\((?P<src>[^)]+?)\)\s*$")
+_SRC_LINE = re.compile(r"^\s*[<(]?\s*(?:출처|자료|source)\s*[:：]\s*(?P<src>.+?)\s*[)>]?\s*$", re.I)
+_CHART_FENCE = re.compile(r"^\s*```+\s*chart\s*$", re.I)
+_FENCE_END = re.compile(r"^\s*```+\s*$")
+_ANY_FENCE_OPEN = re.compile(r"^\s*```")
+
+
+def _split_para_chunks(text: str) -> list[str]:
+    """텍스트를 문단 청크 목록으로 나눈다.
+
+    ```…``` 코드펜스 블록(예: ```chart)과 ![](…)+다음 줄 '출처:' 는 **한 청크로 유지**하고,
+    그 외 줄은 한 줄씩 낸다. 표-문단을 줄 단위로 재구성하는 apply_markdown_tables 가
+    차트/이미지 마커를 쪼개 깨뜨리지 않도록 공용으로 쓴다(빈 줄은 버림).
+    """
+    lines = text.split("\n")
+    out: list[str] = []
+    i, n = 0, len(lines)
+    while i < n:
+        ln = lines[i]
+        if _ANY_FENCE_OPEN.match(ln):  # ```…``` 통째로 한 청크
+            j = i + 1
+            while j < n and not _FENCE_END.match(lines[j]):
+                j += 1
+            block = "\n".join(lines[i:min(j + 1, n)]).strip()
+            if block:
+                out.append(block)
+            i = j + 1
+            continue
+        if not ln.strip():
+            i += 1
+            continue
+        if _MD_IMG.match(ln) and i + 1 < n and _SRC_LINE.match(lines[i + 1]):
+            out.append(ln + "\n" + lines[i + 1])  # 이미지 + 출처 한 청크
+            i += 2
+            continue
+        out.append(ln)
+        i += 1
+    return [c for c in out if c.strip()]
+
+
+def _korean_font() -> str | None:
+    """matplotlib 에서 쓸 한글 글꼴 이름(설치된 것 중 첫 후보)."""
+    try:
+        import matplotlib.font_manager as fm
+    except Exception:  # noqa: BLE001
+        return None
+    names = {f.name for f in fm.fontManager.ttflist}
+    for cand in ("Malgun Gothic", "NanumGothic", "Nanum Gothic", "Gulim", "Dotum", "Batang"):
+        if cand in names:
+            return cand
+    return None
+
+
+def _render_chart_png(spec: dict, *, default_font: str | None = None) -> bytes:
+    """차트 스펙(dict) → PNG bytes. type=bar|barh|line|pie 지원."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    font = default_font or _korean_font()
+    if font:
+        plt.rcParams["font.family"] = font
+    plt.rcParams["axes.unicode_minus"] = False
+
+    ctype = str(spec.get("type", "bar")).lower()
+    title = spec.get("title") or ""
+    x = spec.get("x") or spec.get("labels") or spec.get("categories") or []
+    x = [str(v) for v in x]
+    # 단일 y 또는 다계열(series: {name:[..]})
+    series = spec.get("series")
+    if series is None:
+        y = spec.get("y") or spec.get("values") or spec.get("data") or []
+        series = {spec.get("name", ""): [float(v) for v in y]} if y else {}
+    else:
+        series = {str(k): [float(v) for v in vs] for k, vs in series.items()}
+
+    colors = spec.get("colors") or [
+        "#2E6FB7", "#E08E0B", "#3F9C4F", "#C0504D", "#8064A2", "#4BACC6",
+    ]
+    w_in = float(spec.get("fig_w", 6.2))
+    h_in = float(spec.get("fig_h", 3.6))
+    fig, ax = plt.subplots(figsize=(w_in, h_in), dpi=150)
+
+    try:
+        if ctype == "pie":
+            vals = next(iter(series.values())) if series else []
+            ax.pie(vals, labels=x or None, autopct="%1.1f%%",
+                   colors=colors[: len(vals)] or None, startangle=90)
+            ax.axis("equal")
+        elif ctype == "line":
+            for i, (name, vs) in enumerate(series.items()):
+                ax.plot(x or range(len(vs)), vs, marker="o",
+                        color=colors[i % len(colors)], label=name or None)
+            if any(k for k in series):
+                ax.legend()
+            if spec.get("ylabel"):
+                ax.set_ylabel(str(spec["ylabel"]))
+            if spec.get("xlabel"):
+                ax.set_xlabel(str(spec["xlabel"]))
+            ax.grid(True, axis="y", alpha=0.3)
+        else:  # bar / barh (다계열은 그룹막대)
+            n = len(series)
+            names = list(series)
+            import numpy as np
+            idx = np.arange(len(x) if x else (len(next(iter(series.values()))) if series else 0))
+            bw = 0.8 / max(n, 1)
+            for i, name in enumerate(names):
+                vs = series[name]
+                off = (i - (n - 1) / 2) * bw
+                if ctype == "barh":
+                    ax.barh(idx + off, vs, height=bw, color=colors[i % len(colors)],
+                            label=name or None)
+                else:
+                    ax.bar(idx + off, vs, width=bw, color=colors[i % len(colors)],
+                           label=name or None)
+            if ctype == "barh":
+                ax.set_yticks(idx); ax.set_yticklabels(x)
+                if spec.get("xlabel"):
+                    ax.set_xlabel(str(spec["xlabel"]))
+            else:
+                ax.set_xticks(idx); ax.set_xticklabels(x)
+                if spec.get("ylabel"):
+                    ax.set_ylabel(str(spec["ylabel"]))
+            if n > 1:
+                ax.legend()
+            ax.grid(True, axis=("x" if ctype == "barh" else "y"), alpha=0.3)
+        if title:
+            ax.set_title(title)
+        fig.tight_layout()
+        import io
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", bbox_inches="tight")
+        return buf.getvalue()
+    finally:
+        plt.close(fig)
+
+
+def _download_image(url: str, cache_dir: Path, *, timeout: int = 15) -> bytes | None:
+    """URL 이미지 다운로드 → PNG bytes(캐시). 실패 시 None."""
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    key = hashlib.sha1(url.encode("utf-8")).hexdigest()[:16]
+    cached = cache_dir / f"{key}.png"
+    if cached.exists():
+        return cached.read_bytes()
+    raw = None
+    try:
+        import requests
+        r = requests.get(url, timeout=timeout, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code == 200 and r.content:
+            raw = r.content
+    except Exception:  # noqa: BLE001
+        try:
+            import urllib.request
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+                raw = resp.read()
+        except Exception:  # noqa: BLE001
+            raw = None
+    if not raw:
+        return None
+    try:  # 어떤 포맷이든 PNG(RGB/RGBA)로 정규화
+        import io
+        from PIL import Image
+        im = Image.open(io.BytesIO(raw))
+        if im.mode not in ("RGB", "RGBA"):
+            im = im.convert("RGB")
+        buf = io.BytesIO()
+        im.save(buf, format="PNG")
+        data = buf.getvalue()
+    except Exception:  # noqa: BLE001
+        return None
+    cached.write_bytes(data)
+    return data
+
+
+def _read_local_image(path: Path) -> bytes | None:
+    """로컬 이미지 파일 → PNG bytes. 실패 시 None."""
+    try:
+        import io
+        from PIL import Image
+        im = Image.open(path)
+        if im.mode not in ("RGB", "RGBA"):
+            im = im.convert("RGB")
+        buf = io.BytesIO()
+        im.save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception:  # noqa: BLE001
+        try:
+            return Path(path).read_bytes()
+        except Exception:  # noqa: BLE001
+            return None
+
+
+def _add_image_embedded(doc, png_bytes: bytes) -> str:
+    """add_image 로 등록하고 manifest opf:item 에 isEmbeded="1" 를 덧붙인다.
+
+    isEmbeded 가 없으면 한컴이 임베드 그림을 로드하지 못해 렌더가 누락된다(검증됨).
+    """
+    item_id = doc.add_image(png_bytes, "png")
+    try:
+        pkg = doc._package
+        mel = pkg._manifest_element()
+        for it in mel.findall(f"{{{_OPF_NS}}}item"):
+            if it.get("id") == item_id:
+                it.set("isEmbeded", "1")
+                break
+        pkg._persist_manifest()
+    except Exception:  # noqa: BLE001
+        pass
+    return item_id
+
+
+def _sub(parent, tag, attrs, ns=_HP_NS):
+    from lxml import etree as LET
+    e = LET.SubElement(parent, f"{{{ns}}}{tag}")
+    for k, v in attrs.items():
+        e.set(k, str(v))
+    return e
+
+
+def _build_pic_paragraph(item_id: str, png_bytes: bytes, para_pr_id, char_pr_id,
+                         *, disp_mm: float = 140.0):
+    """PNG 종횡비를 유지한 크기의 <hp:pic>(treatAsChar, 가운데) 문단 element 생성."""
+    from lxml import etree as LET
+    from PIL import Image
+    import io
+    im = Image.open(io.BytesIO(png_bytes))
+    pw, ph = im.size
+    w_hu = int(round(disp_mm * _HWPUNIT_PER_MM))
+    h_hu = int(round(w_hu * ph / pw)) if pw else int(round(disp_mm * 0.6 * _HWPUNIT_PER_MM))
+
+    nsmap = {"hp": _HP_NS, "hc": _HC_NS}
+    p = LET.Element(f"{{{_HP_NS}}}p", nsmap=nsmap)
+    p.set("paraPrIDRef", str(para_pr_id if para_pr_id is not None else 0))
+    run = LET.SubElement(p, f"{{{_HP_NS}}}run")
+    run.set("charPrIDRef", str(char_pr_id if char_pr_id is not None else 0))
+    pic = LET.SubElement(run, f"{{{_HP_NS}}}pic")
+    for k, v in {
+        "reverse": "0", "numberingType": "PICTURE", "textWrap": "TOP_AND_BOTTOM",
+        "textFlow": "BOTH_SIDES", "lock": "0", "dropcapstyle": "None",
+        "href": "", "groupLevel": "0",
+    }.items():
+        pic.set(k, v)
+    _sub(pic, "offset", {"x": 0, "y": 0})
+    _sub(pic, "orgSz", {"width": w_hu, "height": h_hu})
+    _sub(pic, "curSz", {"width": w_hu, "height": h_hu})
+    _sub(pic, "flip", {"horizontal": 0, "vertical": 0})
+    _sub(pic, "rotationInfo", {"angle": 0, "centerX": w_hu // 2, "centerY": h_hu // 2,
+                               "rotateimage": 1})
+    ri = LET.SubElement(pic, f"{{{_HP_NS}}}renderingInfo")
+    ident = {"e1": 1, "e2": 0, "e3": 0, "e4": 0, "e5": 1, "e6": 0}
+    _sub(ri, "transMatrix", ident, ns=_HC_NS)
+    _sub(ri, "scaMatrix", ident, ns=_HC_NS)
+    _sub(ri, "rotMatrix", ident, ns=_HC_NS)
+    ir = LET.SubElement(pic, f"{{{_HP_NS}}}imgRect")
+    _sub(ir, "pt0", {"x": 0, "y": 0}, ns=_HC_NS)
+    _sub(ir, "pt1", {"x": w_hu, "y": 0}, ns=_HC_NS)
+    _sub(ir, "pt2", {"x": w_hu, "y": h_hu}, ns=_HC_NS)
+    _sub(ir, "pt3", {"x": 0, "y": h_hu}, ns=_HC_NS)
+    _sub(pic, "imgClip", {"left": 0, "right": w_hu, "top": 0, "bottom": h_hu})
+    _sub(pic, "inMargin", {"left": 0, "right": 0, "top": 0, "bottom": 0})
+    _sub(pic, "imgDim", {"dimwidth": w_hu, "dimheight": h_hu})
+    _sub(pic, "img", {"binaryItemIDRef": item_id, "bright": 0, "contrast": 0,
+                      "effect": "REAL_PIC", "alpha": 0}, ns=_HC_NS)
+    LET.SubElement(pic, f"{{{_HP_NS}}}effects")
+    _sub(pic, "sz", {"width": w_hu, "widthRelTo": "ABSOLUTE", "height": h_hu,
+                     "heightRelTo": "ABSOLUTE", "protect": 0})
+    _sub(pic, "pos", {"treatAsChar": 1, "affectLSpacing": 0, "flowWithText": 1,
+                      "allowOverlap": 0, "holdAnchorAndSO": 0, "vertRelTo": "PARA",
+                      "horzRelTo": "PARA", "vertAlign": "TOP", "horzAlign": "CENTER",
+                      "vertOffset": 0, "horzOffset": 0})
+    _sub(pic, "outMargin", {"left": 0, "right": 0, "top": 0, "bottom": 0})
+    return p
+
+
+def _img_blocks(text: str):
+    """본문 텍스트를 [('text',str)|('chart',dict)|('image',dict)] 블록으로 나눈다.
+
+    image dict: {alt, src, source?}, chart dict: 파싱된 스펙(+ _source).
+    ![](..) 바로 다음 줄의 '출처:' 라인은 그 그림의 출처로 흡수한다.
+    """
+    import yaml as _yaml
+    lines = text.split("\n")
+    blocks: list = []
+    i, n = 0, len(lines)
+
+    def _flush_text(acc):
+        if acc:
+            blocks.append(("text", "\n".join(acc)))
+
+    text_acc: list = []
+    while i < n:
+        line = lines[i]
+        if _CHART_FENCE.match(line):
+            _flush_text(text_acc); text_acc = []
+            j = i + 1
+            body: list = []
+            while j < n and not _FENCE_END.match(lines[j]):
+                body.append(lines[j]); j += 1
+            spec = None
+            try:
+                spec = _yaml.safe_load("\n".join(body)) or {}
+            except Exception:  # noqa: BLE001
+                spec = None
+            if isinstance(spec, dict):
+                blocks.append(("chart", spec))
+            else:  # 파싱 실패 → 원문 텍스트로 보존
+                blocks.append(("text", "\n".join([line] + body + (["```"] if j < n else []))))
+            i = j + 1
+            continue
+        m = _MD_IMG.match(line)
+        if m:
+            _flush_text(text_acc); text_acc = []
+            alt = (m.group("alt") or "").strip()
+            src = (m.group("src") or "").strip()
+            source = None
+            if "|" in alt:  # "캡션|출처" 형태
+                alt, source = (s.strip() for s in alt.split("|", 1))
+            # 다음 줄이 출처 라인이면 흡수
+            if i + 1 < n:
+                sm = _SRC_LINE.match(lines[i + 1])
+                if sm:
+                    source = sm.group("src").strip()
+                    i += 1
+            blocks.append(("image", {"alt": alt, "src": src, "source": source}))
+            i += 1
+            continue
+        text_acc.append(line)
+        i += 1
+    _flush_text(text_acc)
+    # 인접 text 병합
+    merged: list = []
+    for kind, payload in blocks:
+        if kind == "text" and merged and merged[-1][0] == "text":
+            merged[-1] = ("text", merged[-1][1] + "\n" + payload)
+        else:
+            merged.append((kind, payload))
+    return merged
+
+
+def apply_markdown_images(hwpx_path, *, base_dir=None, default_width_mm: float = 140.0,
+                          max_images: int = 100, fig_counter_start: int = 1) -> dict:
+    """본문 문단 안의 ```chart 블록·![](이미지) 마커를 실제 HWPX 그림으로 변환한다.
+
+    - chart: matplotlib 로 렌더 → 임베드. image: URL 다운로드/로컬 읽기 → 임베드.
+    - 각 그림 아래 '<그림 N> 캡션 (출처: …)' 문단을 붙인다.
+    - 표 셀 내부·표를 이미 품은 문단은 제외. 렌더/다운로드 실패 블록은 텍스트로 보존.
+    반환 {ok, images, charts, failed, reason?}.
+    """
+    try:
+        doc = open_hwpx(hwpx_path)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": f"open: {exc}"}
+
+    base = Path(base_dir) if base_dir else Path(hwpx_path).parent
+    cache_dir = base / ".img_cache"
+    kfont = _korean_font()
+
+    n_img = n_chart = n_fail = 0
+    fig_no = [fig_counter_start]
+    total = [0]
+
+    def _caption_text(prefix_caption: str | None, source: str | None) -> str:
+        cap = f"<그림 {fig_no[0]}>"
+        if prefix_caption:
+            cap += f" {prefix_caption}"
+        if source:
+            cap += f" (출처: {source})"
+        fig_no[0] += 1
+        return cap
+
+    try:
+        for si, sec in enumerate(doc.sections):
+            secel = sec.element
+            changed = False
+            for p in [c for c in list(secel) if c.tag.endswith("}p")]:
+                if _has_table_el(p):
+                    continue
+                text = _p_text_el(p)
+                if "![" not in text and "```chart" not in text.lower():
+                    continue
+                blocks = _img_blocks(text)
+                if not any(b[0] in ("image", "chart") for b in blocks):
+                    continue
+                pp = p.get("paraPrIDRef")
+                cpr = None
+                for r in p.iter():
+                    if r.tag.endswith("}run") and r.get("charPrIDRef"):
+                        cpr = r.get("charPrIDRef"); break
+                new_els: list = []
+                for kind, payload in blocks:
+                    if total[0] >= max_images and kind in ("image", "chart"):
+                        kind, payload = "text", (payload.get("alt") or payload.get("title") or "")
+                    if kind == "text":
+                        for line in (payload or "").split("\n"):
+                            if not line.strip():
+                                continue
+                            np_ = doc.add_paragraph(line, section_index=si,
+                                                    para_pr_id_ref=pp, inherit_style=True)
+                            new_els.append(np_.element)
+                        continue
+                    # 그림/차트 → PNG bytes 확보
+                    png = None
+                    caption = None
+                    source = None
+                    try:
+                        if kind == "chart":
+                            spec = dict(payload)
+                            source = spec.get("source")
+                            caption = spec.get("caption") or spec.get("title")
+                            png = _render_chart_png(spec, default_font=kfont)
+                        else:  # image
+                            caption = payload.get("alt") or None
+                            source = payload.get("source")
+                            src = payload.get("src", "")
+                            if re.match(r"^https?://", src, re.I):
+                                if not source:
+                                    from urllib.parse import urlparse
+                                    source = urlparse(src).netloc or None
+                                png = _download_image(src, cache_dir)
+                            else:
+                                ip = (base / src) if not os.path.isabs(src) else Path(src)
+                                png = _read_local_image(ip)
+                    except Exception:  # noqa: BLE001
+                        png = None
+                    if not png:  # 실패 → 캡션·출처를 텍스트로 보존(내용 손실 방지)
+                        n_fail += 1
+                        fallback = caption or payload.get("src", "") if isinstance(payload, dict) else ""
+                        if source:
+                            fallback = f"{fallback} (출처: {source})"
+                        if fallback.strip():
+                            np_ = doc.add_paragraph(fallback, section_index=si,
+                                                    para_pr_id_ref=pp, inherit_style=True)
+                            new_els.append(np_.element)
+                        continue
+                    item_id = _add_image_embedded(doc, png)
+                    wmm = default_width_mm
+                    if isinstance(payload, dict) and payload.get("width_mm"):
+                        try:
+                            wmm = float(payload["width_mm"])
+                        except Exception:  # noqa: BLE001
+                            pass
+                    pic_p = _build_pic_paragraph(item_id, png, pp, cpr, disp_mm=wmm)
+                    new_els.append(pic_p)
+                    cap = _caption_text(caption, source)
+                    cap_p = doc.add_paragraph(cap, section_index=si,
+                                              para_pr_id_ref=pp, inherit_style=True)
+                    new_els.append(cap_p.element)
+                    total[0] += 1
+                    if kind == "chart":
+                        n_chart += 1
+                    else:
+                        n_img += 1
+                # 원 문단 자리에 순서대로 삽입 후 원 문단 제거
+                anchor = p
+                for el in new_els:
+                    if el.getparent() is not None:
+                        el.getparent().remove(el)
+                    anchor.addnext(el)
+                    anchor = el
+                secel.remove(p)
+                changed = True
+            if changed:
+                sec.mark_dirty()
+        save_hwpx(doc, hwpx_path)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": f"convert: {exc}"}
+    return {"ok": True, "images": n_img, "charts": n_chart, "failed": n_fail}

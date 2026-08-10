@@ -97,6 +97,8 @@ def restore(
     env.setdefault("HWPX_HANGING_INDENT", "1")
     # 마크다운 표(| a | b |) → 실제 HWPX 표
     env.setdefault("HWPX_MD_TABLES", "1")
+    # 마크다운 그림/차트(```chart · ![](url)) → 실제 HWPX 그림개체(+ <그림 N> 캡션)
+    env.setdefault("HWPX_MD_IMAGES", "1")
     _run(args, env=env)
     return str(out)
 
