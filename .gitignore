@@ -17,3 +17,6 @@ __pycache__/
 /hwpx_yaml_out/
 /webapp/data/
 /webapp/**/__pycache__/
+
+# uvicorn runtime logs
+/webapp/uvicorn.*.log

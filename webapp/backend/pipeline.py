@@ -71,8 +71,13 @@ def restore(
     yaml_dir: str | Path,
     out: str | Path,
     template_path: str | Path | None = None,
+    pure: bool = False,
 ) -> str:
-    """채워진 yaml 을 원본 hwpx 에 오버레이 → 최종 hwpx (yaml2hwpx.py restore)."""
+    """채워진 yaml 을 원본 hwpx 에 오버레이 → 최종 hwpx (yaml2hwpx.py restore).
+
+    pure=True 면 모든 후처리(글꼴·표레이아웃·출처취합·내어쓰기·MD표/그림)를 끄고 **순수 왕복**한다.
+    후처리는 문단 개수를 바꿔 좌표(sX/pY) 를 흔들 수 있어, 구조편집(행/열)처럼 좌표 해석이 필요한
+    작업 전에는 pure 로 복원해야 resolve_table 이 맞는다."""
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
     args = [
@@ -83,10 +88,19 @@ def restore(
     ]
     if template_path:
         args += ["--template", str(template_path)]
-    # 최종 문서 글꼴 강제: 본문=돋움 12pt, 표 셀=돋움 8pt (환경변수로 조정 가능).
     env = dict(os.environ)
+    if pure:
+        # 순수 왕복(구조편집용): 문단 이동을 유발하는 후처리를 모두 끈다.
+        for _k in ("HWPX_APPLY_FONTS", "HWPX_TABLE_LAYOUT", "HWPX_COLLECT_SOURCES",
+                   "HWPX_HANGING_INDENT", "HWPX_MD_TABLES", "HWPX_MD_IMAGES"):
+            env[_k] = "0"
+        _run(args, env=env)
+        return str(out)
+    # 최종 문서 글꼴 강제: 본문=돋움체 12pt, 표 셀=돋움 8pt (환경변수로 조정 가능).
+    # (사용자 요청: 본문 글자체는 '돋움'(가변폭)이 아니라 '돋움체'(고정폭). 표 셀은 돋움 유지.)
     env.setdefault("HWPX_APPLY_FONTS", "1")
-    env.setdefault("HWPX_FONT", "돋움")
+    env.setdefault("HWPX_FONT", "돋움체")
+    env.setdefault("HWPX_CELL_FONT", "돋움")
     env.setdefault("HWPX_BODY_PT", "12")
     env.setdefault("HWPX_CELL_PT", "8")
     # 표: 셀 글자 가로 가운데정렬 + 표 폭을 용지(본문영역) 폭에 맞춤

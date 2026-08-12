@@ -274,13 +274,24 @@ def read_node(pid: str, nid: str) -> dict:
     prompts = _read_json(ppath)
     preset = presets.preset_for(nid)
     if prompts is None:
+        # 문체 스타일 3원천: ① 한글파일 요구=guidelines, ② 스킬 제공=preset.style,
+        # ③ 추가=빈값. 저장은 ③(style_extra)·structure 만 사용자 소유로 두고,
+        # ②·합본 style 은 read 시 항상 현재 프리셋에서 파생한다(아래).
         prompts = {
-            "style": preset.get("style", ""),
+            "style_extra": "",
             "structure": preset.get("structure", ""),
             "guidelines": guidelines,
             "preset_skill": preset.get("skill", ""),
         }
         _write_json(ppath, prompts)
+
+    # ② 스킬 제공 + 합본 style 은 항상 '현재' 프리셋에서 파생한다 —
+    # _프롬프트/prompt_styles.json 을 갱신하면 저장분 마이그레이션 없이 모든 절에 즉시 반영된다.
+    # 사용자 소유는 ③(style_extra)·structure 뿐(그대로 보존).
+    _skill = preset.get("style", "")
+    prompts["style_skill"] = _skill
+    prompts["style"] = presets.combine_style(_skill, prompts.get("style_extra", "") or "")
+    prompts.setdefault("preset_skill", preset.get("skill", ""))
 
     # input.md — 없으면 ""
     ipath = _input_path(pid, nid)
@@ -396,6 +407,152 @@ def read_rfp_text(pid: str) -> str:
 
 def rfp_meta(pid: str) -> dict | None:
     return _read_json(_rfp_meta_path(pid))
+
+
+# ── 제반사항(프로젝트 공통, 구조화 입력) 저장 ────────────────────────────────
+# 구조: {institutions:[{role,name,type,duty}], period, funding:[{org,year,amount}], goal}
+# 저장은 overview.json(구조화), 생성(LLM)용으로는 _overview_serialize 로 텍스트화한다.
+def _overview_path(pid: str) -> Path:
+    return project_dir(pid) / "overview.txt"  # (구버전 자유텍스트 — 읽기 폴백용)
+
+
+def _overview_json_path(pid: str) -> Path:
+    return project_dir(pid) / "overview.json"
+
+
+_OVERVIEW_DEFAULT: dict = {
+    "institutions": [], "period": "", "periods": [], "funding": [], "goal": "",
+    # 표지(사업계획서 표지) 입력: {title_ko,title_en,leader_name,leader_title,leader_tel,
+    #   leader_mobile,leader_email,biz_no,corp_no,address}
+    "cover": {},
+    # 요약문 연구개발 목표 및 내용: {goal_final, goals:[{year,text}], contents:[{year,text}]}
+    "summary": {},
+}
+
+
+def _overview_serialize(data: dict) -> str:
+    """구조화 제반사항을 LLM 프롬프트용 텍스트 블록으로 직렬화(빈 항목은 생략)."""
+    data = data or {}
+    lines: list[str] = []
+
+    insts = [i for i in (data.get("institutions") or []) if isinstance(i, dict) and any(
+        (v or "").strip() for v in i.values() if isinstance(v, str))]
+    if insts:
+        lines.append("[참여기관]")
+        for i in insts:
+            role = (i.get("role") or "").strip()
+            name = (i.get("name") or "").strip()
+            typ = (i.get("type") or "").strip()
+            duty = (i.get("duty") or "").strip()
+            seg: list[str] = []
+            head = f"({role}) {name}".strip() if role else name
+            if head:
+                seg.append(head)
+            if typ:
+                seg.append(typ)
+            if duty:
+                seg.append(f"담당: {duty}")
+            lead = (i.get("lead_name") or "").strip()
+            if lead:
+                lt = (i.get("lead_title") or "").strip()
+                seg.append(f"책임자: {lead}" + (f"({lt})" if lt else ""))
+            if seg:
+                lines.append("- " + " · ".join(seg))
+
+    annuals = [p for p in (data.get("periods") or []) if isinstance(p, dict) and any(
+        (v or "").strip() for v in p.values() if isinstance(v, str))]
+    if annuals:
+        lines.append("[연차별 연구기간]")
+        for p in annuals:
+            st = (p.get("stage") or "").strip()
+            yr = (p.get("year") or "").strip()
+            rng = (p.get("range") or "").strip()
+            lab = f"{st}단계 {yr}" if st and yr else (yr or st)
+            seg = [x for x in (lab, rng) if x]
+            if seg:
+                lines.append("- " + ": ".join(seg))
+    else:
+        period = (data.get("period") or "").strip()
+        if period:
+            lines.append(f"[연구기간] {period}")
+
+    funds = [f for f in (data.get("funding") or []) if isinstance(f, dict) and any(
+        (v or "").strip() for v in f.values() if isinstance(v, str))]
+    if funds:
+        lines.append("[연구기관별·연차별 정부출연금]")
+        for f in funds:
+            seg = [x for x in (
+                (f.get("org") or "").strip(),
+                (f.get("year") or "").strip(),
+                (f.get("amount") or "").strip(),
+            ) if x]
+            if seg:
+                lines.append("- " + " · ".join(seg))
+
+    goal = (data.get("goal") or "").strip()
+    if goal:
+        lines.append("[주요 연구 목표·내용]")
+        lines.append(goal)
+
+    cov = data.get("cover") or {}
+    if isinstance(cov, dict) and any((v or "").strip() for v in cov.values() if isinstance(v, str)):
+        _cov_labels = [
+            ("master_title_ko", "총괄과제명(국문)"), ("master_title_en", "총괄과제명(영문)"),
+            ("title_ko", "과제명(국문)"), ("title_en", "과제명(영문)"),
+            ("sub_biz", "세부사업명"), ("detail_biz", "내역사업명"),
+            ("notice_no", "공고번호"), ("task_no", "연구개발 과제번호"),
+            ("proj_type", "과제유형"), ("selection", "선정방식"), ("security", "보안등급"),
+            ("ind_class1", "산업기술분류 1순위"), ("nat_class1", "국가과학기술분류 1순위"),
+            ("biz_no", "사업자등록번호"), ("corp_no", "법인등록번호"), ("address", "주소"),
+            ("pm_name", "실무책임자"), ("pm_title", "실무책임자 직위"),
+            ("pm_tel", "실무 직장전화"), ("pm_mobile", "실무 휴대전화"),
+            ("pm_email", "실무 전자우편"), ("pm_researcher_no", "실무 국가연구자번호"),
+        ]
+        seg = [f"{lab}: {cov[k].strip()}" for k, lab in _cov_labels
+               if isinstance(cov.get(k), str) and cov[k].strip()]
+        if seg:
+            lines.append("[사업계획서 표지]")
+            lines.extend("- " + s for s in seg)
+
+    sm = data.get("summary") or {}
+    if isinstance(sm, dict):
+        sm_lines: list[str] = []
+        if (sm.get("goal_final") or "").strip():
+            sm_lines.append(f"- 최종목표: {sm['goal_final'].strip()}")
+        for g in (sm.get("goals") or []):
+            if isinstance(g, dict) and (g.get("text") or "").strip():
+                sm_lines.append(f"- {(g.get('year') or '').strip()} 목표: {g['text'].strip()}")
+        for c in (sm.get("contents") or []):
+            if isinstance(c, dict) and (c.get("text") or "").strip():
+                sm_lines.append(f"- {(c.get('year') or '').strip()} 개발내용: {c['text'].strip()}")
+        if sm_lines:
+            lines.append("[요약문 연구개발 목표 및 내용]")
+            lines.extend(sm_lines)
+
+    return "\n".join(lines).strip()
+
+
+def read_overview_data(pid: str) -> dict:
+    """구조화 제반사항(dict)을 반환. 없으면 기본 빈 구조."""
+    d = _read_json(_overview_json_path(pid))
+    if isinstance(d, dict):
+        return {**_OVERVIEW_DEFAULT, **d}
+    return dict(_OVERVIEW_DEFAULT)
+
+
+def write_overview_data(pid: str, data: dict) -> dict:
+    """구조화 제반사항을 overview.json 에 저장하고 정규화된 dict 를 반환."""
+    data = data if isinstance(data, dict) else {}
+    clean = {**_OVERVIEW_DEFAULT, **{k: data.get(k) for k in _OVERVIEW_DEFAULT if k in data}}
+    _write_json(_overview_json_path(pid), clean)
+    return clean
+
+
+def read_overview(pid: str) -> str:
+    """LLM 투입용 제반사항 텍스트. overview.json 있으면 직렬화, 없으면 구버전 txt 폴백."""
+    if _overview_json_path(pid).exists():
+        return _overview_serialize(read_overview_data(pid))
+    return _read_text(_overview_path(pid), default="")
 
 
 # ── __main__ 스모크 테스트 ────────────────────────────────────────────────────

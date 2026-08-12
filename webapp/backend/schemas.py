@@ -33,8 +33,16 @@ class GenerateBody(_Base):
 
 
 class PromptsBody(_Base):
-    """PUT .../prompts — {style, structure}"""
-    style: str = ""
+    """PUT .../prompts — 문체 스타일 3원천 + 구성.
+
+    style_skill(② 스킬 제공)·style_extra(③ 추가)·structure 를 받는다. ①(기존 한글파일
+    요구)은 guidelines 로 이미 전달되므로 별도 저장하지 않는다. 저장 시 style 은
+    style_skill + style_extra 를 합쳐 만든다(기존 작성 파이프라인 호환). 구버전 {style}
+    호출도 그대로 받는다.
+    """
+    style: str | None = None          # 구버전 호환(있으면 style_skill 로 취급)
+    style_skill: str | None = None
+    style_extra: str | None = None
     structure: str = ""
     guidelines: list[str] | None = None
 
@@ -44,6 +52,19 @@ class InputBody(_Base):
     input: str = ""
 
 
+class OverviewBody(_Base):
+    """PUT .../overview — {data} (제반사항: 구조화 입력).
+
+    data = {institutions:[{role,name,type,duty}], period, periods:[{year,range}],
+            funding:[{org,year,amount}], goal}
+    (구버전 {text} 자유입력도 관대하게 받되, 현재 프론트는 data 로 보낸다.)
+    """
+    data: dict[str, Any] | None = None
+    text: str | None = None
+    # True 면 저장 직후 문서 표(표지·요약문·편성도·연구비)에 즉시 반영(doc_fill).
+    apply: bool = False
+
+
 class ChatBody(_Base):
     """POST .../chat — {message, apply}
 
@@ -51,16 +72,6 @@ class ChatBody(_Base):
     """
     message: str = ""
     apply: bool = True
-
-
-class RfpAutofillBody(_Base):
-    """POST .../rfp/autofill — {sections?, apply}
-
-    sections 를 주면 그 절만, 없으면 rfp.TARGET_SECTIONS 전체를 자동작성한다.
-    apply=True 면 생성 초안을 yaml/section_*.yaml 에도 병합(빌드 즉시 반영).
-    """
-    sections: list[str] | None = None
-    apply: bool = False
 
 
 # ── 응답 모델 ────────────────────────────────────────────────────────────────

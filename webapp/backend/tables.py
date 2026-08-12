@@ -223,7 +223,7 @@ def _base_path(pid: str) -> Path:
     return store.project_dir(pid) / "source.hwpx"
 
 
-def _apply_structural(pid: str, table_path: str, mutate) -> dict:
+def _apply_structural(pid: str, table_path: str, mutate, pure: bool = False) -> dict:
     base = _base_path(pid)
     ydir = store.yaml_dir(pid)
     outd = store.output_dir(pid)
@@ -237,7 +237,8 @@ def _apply_structural(pid: str, table_path: str, mutate) -> dict:
         shutil.rmtree(str(bak_yaml))
     shutil.copytree(str(ydir), str(bak_yaml))
     try:
-        pipeline.restore(str(base), str(ydir), str(tmp))   # 1) 현재 텍스트 반영
+        # pure=True: 후처리 없는 순수 복원(문단 좌표 보존 → resolve_table 정확)
+        pipeline.restore(str(base), str(ydir), str(tmp), pure=pure)   # 1) 현재 텍스트 반영
         doc = _H.open_hwpx(str(tmp))                        # 2) 표 XML 조작
         tbl = _H.resolve_table(doc, table_path)
         info = mutate(tbl)
@@ -255,6 +256,234 @@ def _apply_structural(pid: str, table_path: str, mutate) -> dict:
             f"구조 편집 실패(원상복구됨): 병합셀이 많은 표는 이 위치에서 행/열 변경이 "
             f"어려울 수 있습니다. ({type(exc).__name__})"
         ) from exc
+
+
+# ── 8-1형(단계/연차/기관) 표: 단계 수에 맞춰 단계 블록 재구성 ─────────────────
+def _cell_text(tc) -> str:
+    t = tc.find(f".//{_NS}t")
+    return (t.text or "") if t is not None else ""
+
+
+def _set_cell_text(tc, s: str) -> None:
+    t = tc.find(f".//{_NS}t")
+    if t is not None:
+        t.text = s
+
+
+def _c0_text(tr) -> str:
+    for tc in _tcs(tr):
+        if _addr(tc)[0] == 0:
+            return _cell_text(tc).strip()
+    return ""
+
+
+def _is_stage_anchor(tr) -> bool:
+    t = _c0_text(tr)
+    return t.isdigit() or t in ("n", "N")
+
+
+def _set_stage_label(tr, label: str) -> None:
+    for tc in _tcs(tr):
+        if _addr(tc)[0] == 0:
+            _set_cell_text(tc, label)
+            return
+
+
+def _tc_at(tr_or_cells, col: int):
+    cells = _tcs(tr_or_cells) if hasattr(tr_or_cells, "iter") else tr_or_cells
+    for tc in cells:
+        if _addr(tc)[0] == col:
+            return tc
+    return None
+
+
+def _set_rowspan(tc, n: int) -> None:
+    s = tc.find(f"{_NS}cellSpan")
+    if s is not None:
+        s.set("rowSpan", str(n))
+
+
+def rebuild_budget_stages(pid: str, table_path: str, stage_year_counts) -> dict:
+    """8-1형 표를 '단계 × 연차 × 기관' 완전 구조로 재구성한다.
+
+    - **연차1 서브그룹(기관별 데이터행+비율행)** 을 원자 단위로 삼아, 모든 연차를 그 구조로 만든다
+      (=연차2 이후에도 비율행 생성). 각 단계는 (Y 연차 유닛 + 소계) 로 구성, 마지막에 총계.
+    - `stage_year_counts` = 단계별 연차 수 리스트(예 [2,2] = 2단계 각 2연차).
+    - 데이터 셀은 비우고(이후 doc_fill 채움), 단계/연차 라벨·병합(rowSpan)·rowAddr·rowCnt 를 재설정.
+    구조편집이므로 pure 복원(후처리 OFF)으로 좌표를 맞춘 뒤 수행하며, 실패 시 롤백된다."""
+    counts = [max(1, int(c)) for c in (stage_year_counts or [1])] or [1]
+
+    def mutate(tbl):
+        el = tbl.element
+        trs = _trs(el)
+        # 앵커 인식
+        s1_idx = next((i for i, tr in enumerate(trs) if _is_stage_anchor(tr)), None)
+        total_idx = next((i for i, tr in enumerate(trs) if _c0_text(tr) == "총계"), None)
+        if s1_idx is None or total_idx is None:
+            return {"ok": False, "reason": "구조 인식 실패"}
+        # 연차1 유닛 높이 = 단계1 첫 행의 c1(연차) rowSpan
+        c1_cell = _tc_at(trs[s1_idx], 1)
+        yh = _span(c1_cell)[1] if c1_cell is not None else 8   # 유닛 행 수(기관수×2)
+        # 소계 tr(단계1 범위 안 c1='소계')
+        soke_idx = next((i for i in range(s1_idx, total_idx)
+                         if _c1_text(trs[i]) == "소계"), None)
+        if soke_idx is None:
+            return {"ok": False, "reason": "소계행 없음"}
+        header = trs[:s1_idx]
+        year_unit = [copy.deepcopy(t) for t in trs[s1_idx:s1_idx + yh]]  # 연차 유닛 원본
+        soke_tpl = copy.deepcopy(trs[soke_idx])
+        total_tpl = copy.deepcopy(trs[total_idx])
+
+        def _blank_unit(unit):
+            for tr in unit:
+                for tc in _tcs(tr):
+                    if _addr(tc)[0] in (2, 3, 4, 5, 6, 7, 8, 9, 10):
+                        _blank_text(tc)
+
+        def _blank_sums(tr):
+            for tc in _tcs(tr):
+                if _addr(tc)[0] in (4, 5, 6, 7, 8, 9, 10):
+                    _blank_text(tc)
+
+        # 새 본문 조립
+        new_body = []
+        for k, Y in enumerate(counts, start=1):
+            stage_rows = Y * yh + 1  # 연차 유닛들 + 소계 1행
+            for j in range(Y):
+                unit = [copy.deepcopy(t) for t in year_unit]
+                _regen_ids_list(unit)
+                _blank_unit(unit)
+                first = unit[0]
+                # 연차 라벨
+                c1c = _tc_at(first, 1)
+                if c1c is not None:
+                    _set_cell_text(c1c, str(j + 1))
+                c0c = _tc_at(first, 0)
+                if j == 0:
+                    # 단계 라벨 + 단계 전체 rowSpan
+                    if c0c is not None:
+                        _set_cell_text(c0c, str(k))
+                        _set_rowspan(c0c, stage_rows)
+                else:
+                    # 후속 연차: 단계 셀 제거(위 단계 셀 rowSpan 이 덮음)
+                    if c0c is not None:
+                        first.remove(c0c)
+                new_body.extend(unit)
+            soke = copy.deepcopy(soke_tpl)
+            _regen_ids(soke)
+            _blank_sums(soke)
+            # 소계행의 c0(단계) 셀은 없어야 함(단계 rowSpan 이 덮음)
+            sc0 = _tc_at(soke, 0)
+            if sc0 is not None:
+                soke.remove(sc0)
+            new_body.append(soke)
+        total = copy.deepcopy(total_tpl)
+        _regen_ids(total)
+        _blank_sums(total)
+        new_body.append(total)
+
+        # 본문 교체: 헤더 뒤 모든 tr 제거 후 새 본문 추가
+        for tr in trs[s1_idx:]:
+            el.remove(tr)
+        for tr in new_body:
+            el.append(tr)
+        # rowAddr 재부여(행 순번)
+        all_trs = _trs(el)
+        for i, tr in enumerate(all_trs):
+            for tc in _tcs(tr):
+                a = tc.find(f"{_NS}cellAddr")
+                if a is not None:
+                    a.set("rowAddr", str(i))
+        el.set("rowCnt", str(len(all_trs)))
+        return {"ok": True, "stages": len(counts), "rows": len(all_trs)}
+
+    return _apply_structural(pid, table_path, mutate, pure=True)
+
+
+# ── 8-3 비목별 세부표: 표 개수를 참여기관 수에 맞춰 복제/제거(구조편집) ────────
+def _apply_structural_doc(pid: str, mutate, pure: bool = False) -> dict:
+    """`_apply_structural` 의 doc 단위 버전 — mutate(doc) 가 문서 전체(섹션/문단)를 조작.
+
+    표 하나가 아니라 '표를 품은 문단' 자체를 복제/제거할 때 쓴다. 실패 시 롤백."""
+    base = _base_path(pid)
+    ydir = store.yaml_dir(pid)
+    outd = store.output_dir(pid)
+    outd.mkdir(parents=True, exist_ok=True)
+    tmp = outd / "_struct.hwpx"
+    bak_base = outd / "_bak_source.hwpx"
+    bak_yaml = outd / "_bak_yaml"
+    shutil.copy(str(base), str(bak_base))
+    if bak_yaml.exists():
+        shutil.rmtree(str(bak_yaml))
+    shutil.copytree(str(ydir), str(bak_yaml))
+    try:
+        pipeline.restore(str(base), str(ydir), str(tmp), pure=pure)
+        doc = _H.open_hwpx(str(tmp))
+        info = mutate(doc) or {}
+        for si in (info.get("sections") or range(len(doc.sections))):
+            doc.sections[si].mark_dirty()
+        _H.save_hwpx(doc, str(tmp))
+        shutil.copy(str(tmp), str(base))
+        pipeline.extract(str(base), str(ydir))
+        return info
+    except Exception as exc:  # noqa: BLE001 - 실패하면 원상복구
+        shutil.copy(str(bak_base), str(base))
+        if ydir.exists():
+            shutil.rmtree(str(ydir))
+        shutil.copytree(str(bak_yaml), str(ydir))
+        raise RuntimeError(f"구조 편집 실패(원상복구됨): ({type(exc).__name__}) {exc}") from exc
+
+
+def rebuild_budget_detail(pid: str, target_n: int, detail_paths: list[str]) -> dict:
+    """8-3 비목별 세부표를 참여기관 수(target_n)에 맞춰 복제/제거한다.
+
+    detail_paths = 현재 세부표 path 목록(문서순, doc_fill 시그니처로 탐색). 세부표를 품은
+    섹션 직속 문단을 lxml deepcopy 로 복제(마지막 세부표를 템플릿으로 뒤에 추가)하거나,
+    남는 것은 뒤에서 제거한다. pure 복원으로 좌표를 맞춘 뒤 수행하며 실패 시 롤백."""
+    target_n = max(1, int(target_n))
+
+    def mutate(doc):
+        hosts = []
+        touched: set[int] = set()
+        for tp in detail_paths:
+            try:
+                tbl = _H.resolve_table(doc, tp)
+            except Exception:  # noqa: BLE001 - 못 찾으면 건너뜀
+                continue
+            hp = _H._host_para_of(tbl.element)
+            if hp is not None:
+                hosts.append(hp)
+                touched.add(_sidx_of(tp))
+        if not hosts:
+            return {"ok": False, "reason": "세부표 없음", "before": 0, "after": 0}
+        cur = len(hosts)
+        if target_n > cur:
+            anchor = hosts[-1]
+            for _ in range(target_n - cur):
+                clone = copy.deepcopy(hosts[-1])   # 마지막 세부표(템플릿) 복제
+                _regen_ids(clone)
+                anchor.addnext(clone)
+                anchor = clone
+        elif target_n < cur:
+            for hp in hosts[target_n:]:
+                par = hp.getparent()
+                if par is not None:
+                    par.remove(hp)
+        return {"ok": True, "before": cur, "after": target_n, "sections": sorted(touched)}
+
+    return _apply_structural_doc(pid, mutate, pure=True)
+
+
+def _c1_text(tr) -> str:
+    for tc in _tcs(tr):
+        if _addr(tc)[0] == 1:
+            return _cell_text(tc).strip()
+    return ""
+
+
+def _regen_ids_list(trs) -> None:
+    for tr in trs:
+        _regen_ids(tr)
 
 
 def _row_owner_tr(el, row: int):

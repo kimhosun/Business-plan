@@ -13,12 +13,17 @@
   깨지는 문제. 마커 폭만큼 내어쓰기해 마커 뒤 본문에 줄맞춤.
 - **2026-08-06** (후속2) "헤드(ㅁ·ㅇ·-)를 제외한 한글 시작위치에서 둘째 줄부터 앞줄 맞추기
   (Shift+Tab)." → 위 내어쓰기와 동일 요구의 재확인. 마커 집합에 ㅁ/자모·기호 불릿 추가로 보강."
+- **2026-08-11** (원문 요지) "한글 본문 글자체는 **돋움체**로 변경." + 문답: "돋움이랑 돋움체는 다르다"
+  → 최초 요청(2026-08-06)의 '본문=돋움체'가 구현에서 본문·셀 모두 **돋움**으로 뭉뚱그려졌던 것을
+  정정. **본문=돋움체(고정폭), 표 셀=돋움**으로 분리 적용.
 
 ## ② 확정 사양
 
 - **적용 규칙**: 복원(restore)으로 만든 최종 hwpx 에서 **텍스트가 있는** run 의 글꼴/크기를 강제.
   - 표 셀(`<hp:tc>` 하위) 안의 텍스트 run → **돋움 8pt**(height=800).
-  - 그 외 본문 텍스트 run → **돋움 12pt**(height=1200).
+  - 그 외 본문 텍스트 run → **돋움체 12pt**(height=1200). *(2026-08-11: 본문 돋움→돋움체)*
+  - **본문/셀 글꼴 분리**: `HWPX_FONT`(본문)·`HWPX_CELL_FONT`(셀)로 각각 지정. cell_face 가
+    문서 fontfaces 에 없으면 본문 글꼴로 폴백. 웹앱은 본문=돋움체·셀=돋움.
   - **빈 run(간격용 빈 문단 등)은 건드리지 않음** → 레이아웃이 부풀지 않음.
 - **구현 방식**: `hwpx_common.apply_fonts(hwpx, face, body_pt, cell_pt)` 후처리.
   1) header.xml 에 기준 charPr 를 복제해 본문(12pt)·셀(8pt) charPr 2개를 추가(fontRef 를
@@ -28,8 +33,8 @@
      압축(mimetype=stored) 유지.
 - **호출 지점**: `yaml2hwpx.py restore` 가 save 직후 apply_fonts 호출. **기본은 OFF**
   (`HWPX_APPLY_FONTS`=0)로 스킬의 순수 왕복 무손실 계약을 보존. **웹앱만 켠다**:
-  `pipeline.restore` 가 `HWPX_APPLY_FONTS=1, HWPX_FONT=돋움, HWPX_BODY_PT=12, HWPX_CELL_PT=8`
-  를 서브프로세스 env 로 주입(사용자 env 가 있으면 그것을 우선).
+  `pipeline.restore` 가 `HWPX_APPLY_FONTS=1, HWPX_FONT=돋움체, HWPX_CELL_FONT=돋움,
+  HWPX_BODY_PT=12, HWPX_CELL_PT=8` 를 서브프로세스 env 로 주입(사용자 env 가 있으면 그것을 우선).
 - **적용 범위**: 웹앱의 [hwpx 빌드]·④ 변환 HWPX 다운로드(둘 다 pipeline.restore 경유) 전체.
 - **멱등성**: restore 는 매번 source 에서 새로 복원 후 fonts 적용 → charPr 누적 없음.
 
@@ -42,6 +47,15 @@
 - [x] 검증(프로젝트 6d90731b): charProperties itemCnt 359→361, 새 charPr 359=돋움 12pt·
       360=돋움 8pt. 본문 run 730개→359, 표 셀 run 3273개→360. 파일 정상 오픈·zip 무결성 OK.
       본문 '연구개발계획서'→359, 표셀 '[ √ ] 일반형' 등→360 확인. 바레 CLI(env 없음)는 미적용.
+
+### 2026-08-11 후속 — 본문 돋움체 / 셀 돋움 분리 (완료)
+- [x] `hwpx_common.py`: `apply_fonts(…, cell_face=None)` + `_augment_header(header, face, cell_face, …)`
+      — 본문 charPr 는 face(돋움체), 셀 charPr 는 cell_face(돋움) fontRef 로 클론. cell_face 미등록 시
+      본문 글꼴로 폴백.
+- [x] `yaml2hwpx.py`: `HWPX_CELL_FONT` env 읽어(기본=HWPX_FONT) apply_fonts 에 cell_face 전달.
+- [x] `webapp/backend/pipeline.py`: `HWPX_FONT=돋움체`, `HWPX_CELL_FONT=돋움` 주입.
+- [x] 검증(f44ab9f7 source): apply_fonts ok, body charPr 359=hangulFont 3(돋움체) 1200,
+      cell charPr 360=hangulFont 2(돋움) 800, runs=3932. 돋움체 id=3·돋움 id=2 확인.
 
 ## ②-내어쓰기 확정 사양
 

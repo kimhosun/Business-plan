@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>연구개발계획서 작성 웹서비스</title>
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles.css?v=20260810d" />
 </head>
 <body>
   <!-- 상단바 -->
@@ -37,19 +37,26 @@
         <button id="btn-tree-refresh" class="btn-icon" title="새로고침">⟳</button>
       </div>
 
-      <!-- RFP 업로드 → 자동작성 -->
+      <!-- RFP 업로드 -->
       <div class="rfp-box">
         <label class="rfp-btn" for="rfp-file"
-               title="RFP(공고·제안요청서) 한글/PDF 를 올리면 1.1·1.2·2.1·2.2·4.1·4.2·5.1·5.2·5.3·5.5 절을 읽고, 인터넷 조사(시장·기술·표준·정책 수치)를 반영해 자동 작성합니다">
+               title="RFP(공고·제안요청서) 한글/PDF 를 올리면 본문을 추출해, 각 절의 '작성 프롬프트' 아래에 참조용으로 표시합니다">
           <span class="rfp-ico">📥</span>
-          <span class="rfp-label">RFP 업로드 · 자동작성</span>
+          <span class="rfp-label">RFP 업로드</span>
           <input type="file" id="rfp-file" accept=".hwp,.hwpx,.pdf" hidden />
         </label>
-        <label class="rfp-apply" title="체크하면 자동작성분을 문서(YAML)에 즉시 반영해 절별 ④ 변환 결과로도 볼 수 있습니다. 미체크여도 [hwpx 빌드] 시 입력한 절이 자동 반영됩니다.">
-          <input type="checkbox" id="rfp-apply" />
-          <span>문서에 즉시 반영(빌드 때도 자동 반영됨)</span>
-        </label>
         <div id="rfp-status" class="rfp-status"></div>
+      </div>
+
+      <!-- 표지/요약문 입력 — 요약 + 별도 편집(모달) -->
+      <div class="overview-box">
+        <div class="overview-head">
+          <span class="overview-title" title="여기 입력한 내용은 빌드 시 문서의 사업계획서 표지·요약문 표에 자동으로 채워집니다(각 절 작성·변환에도 참고 반영)">📌 표지/요약문 입력</span>
+          <button id="btn-overview-open" class="btn-mini" type="button" title="표지·요약문 입력 페이지 열기">편집</button>
+        </div>
+        <div id="overview-summary" class="overview-summary"
+             title="참여기관·연차별 연구기간·정부출연금·표지·요약문">아직 입력된 표지/요약문 내용이 없습니다.</div>
+        <div id="overview-status" class="overview-status hidden"></div>
       </div>
 
       <nav id="tree" class="tree" aria-label="문서 목차">
@@ -110,14 +117,64 @@
               참조 문체 프리셋 불러오기
             </button>
           </div>
-          <label class="field-label" for="prompt-style">문체 스타일 (style)</label>
-          <textarea id="prompt-style" rows="6"
-                    placeholder="개조식·정량표기 등 문체 지침"></textarea>
+          <div class="style-group">
+            <div class="style-part-title">문체 스타일 (style) — 3개 원천</div>
+
+            <label class="field-label" for="prompt-style-doc">
+              ① 기존 한글파일에서 요구하는 것 (※작성요령, 읽기전용)
+            </label>
+            <textarea id="prompt-style-doc" class="style-src-doc" rows="5" readonly
+                      placeholder="원본 hwpx 의 ※작성요령이 여기에 표시됩니다."></textarea>
+
+            <label class="field-label" for="prompt-style-skill">
+              ② 스킬로 제공한 것 (rnd-write 작성 스킬 — _프롬프트 전 절 제공, 읽기전용)
+            </label>
+            <textarea id="prompt-style-skill" class="style-src-skill" rows="12" readonly
+                      placeholder="이 절의 작성 스킬(역할·목적·구성·문체 규칙)이 여기에 표시됩니다."></textarea>
+
+            <label class="field-label" for="prompt-style-extra">
+              ③ 추가로 작성 (직접 보완)
+            </label>
+            <textarea id="prompt-style-extra" rows="4"
+                      placeholder="위 ①②에 더해 이 절에만 적용할 문체 지침을 직접 적습니다."></textarea>
+          </div>
+
           <label class="field-label" for="prompt-structure">구성 (structure)</label>
           <textarea id="prompt-structure" rows="8"
                     placeholder="구성/전개 순서 지침"></textarea>
           <div class="row">
             <button id="btn-prompts-save" class="btn btn-primary">저장</button>
+          </div>
+
+          <!-- 이 절에 적용되는 작성 규정(법령·요령·지침) -->
+          <div id="reg-ref" class="reg-ref hidden">
+            <div class="reg-ref-head">
+              📕 이 절 관련 작성 규정 <span id="reg-ref-meta" class="reg-ref-meta"></span>
+            </div>
+            <div id="reg-ref-list" class="reg-ref-list"></div>
+            <div class="reg-ref-foot">
+              ※ AI 웹검증 결과이며 법적 자문이 아님 — 제출 전 최신 공고·RFP·협약과 대조 필요.
+              전체 근거·조문 전문은 상단 <b>📕 작성 규정 PDF</b> 참조.
+            </div>
+          </div>
+
+          <!-- 업로드한 RFP 본문(참조용, 읽기전용) -->
+          <div id="rfp-ref" class="rfp-ref hidden">
+            <div class="rfp-ref-head">
+              📎 RFP 내용 <span id="rfp-ref-meta" class="rfp-ref-meta"></span>
+            </div>
+            <textarea id="rfp-ref-text" class="mono" rows="14" readonly
+                      placeholder="좌측에서 RFP 를 업로드하면 이 절을 작성할 때 참고할 RFP 본문이 여기에 표시됩니다."></textarea>
+          </div>
+
+          <!-- 표지/요약문 입력(참조용, 읽기전용) -->
+          <div id="overview-ref" class="rfp-ref hidden">
+            <div class="rfp-ref-head">
+              📌 표지/요약문 입력 <span id="overview-ref-meta" class="rfp-ref-meta"></span>
+            </div>
+            <div id="overview-ref-focus" class="overview-ref-focus hidden"></div>
+            <textarea id="overview-ref-text" class="mono" rows="8" readonly
+                      placeholder="좌측 '표지/요약문 입력'에 적은 내용이 여기 표시되어 이 절 작성에 참고됩니다."></textarea>
           </div>
         </div>
 
@@ -182,9 +239,169 @@
     </section>
   </main>
 
+  <!-- 표지 · 요약문 입력 모달(별도 페이지) -->
+  <div id="overview-modal" class="modal-overlay hidden" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="ovm-title">
+      <div class="modal-head">
+        <h2 id="ovm-title" class="modal-title">📌 표지 · 요약문 입력</h2>
+        <span class="modal-sub">여기 입력한 내용은 [빌드] 시 문서의 <b>사업계획서 표지</b>와 <b>요약문</b> 표에 자동으로 채워집니다 (각 절 작성·변환에도 참고로 반영)</span>
+        <button id="btn-overview-close" class="modal-x" type="button" title="닫기">×</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="ovm-group-title">Ⅰ. 표지 입력</div>
+        <!-- 1) 참여기관 -->
+        <div class="ovm-section">
+          <div class="ov-label-row">
+            <span class="ovm-section-title">참여기관</span>
+            <button id="btn-inst-add" class="btn-mini2" type="button" title="참여기관 추가">+ 기관</button>
+          </div>
+          <div id="inst-list" class="ov-list"></div>
+        </div>
+
+        <!-- 2) 연차별 연구기간 -->
+        <div class="ovm-section">
+          <div class="ov-label-row">
+            <span class="ovm-section-title">연차별 연구기간</span>
+            <button id="btn-period-add" class="btn-mini2" type="button" title="연차 추가">+ 연차</button>
+          </div>
+          <div id="period-list" class="ov-list"></div>
+        </div>
+
+        <!-- 3) 정부출연금(참여기관 × 연차 자동 그리드) -->
+        <div class="ovm-section">
+          <div class="ov-label-row">
+            <span class="ovm-section-title">정부출연금 (단위: 천원)</span>
+            <button id="btn-budget-sync" class="btn-mini2" type="button"
+                    title="8.1 지원·부담계획 표를 현재 단계 수에 맞춰 자동 재구성하고 채웁니다(구조 변경, 수십 초 소요)">8.1 표 단계 반영</button>
+            <button id="btn-detail-sync" class="btn-mini2" type="button"
+                    title="8장 비목별 세부 사용계획 표를 참여기관 수만큼 복제하고 연구개발비 총액을 채웁니다(구조 변경, 수십 초 소요)">8장 세부표 기관수 반영</button>
+          </div>
+          <div class="ovm-hint-inline">참여기관·연차를 입력하면 자동 생성 · 표지 정부지원비 및 8.1 표에 반영</div>
+          <div id="fund-grid-wrap" class="fund-grid-wrap"></div>
+        </div>
+
+        <!-- 4) 사업계획서 표지 (공식 서식 전 항목) -->
+        <div class="ovm-section">
+          <div class="ov-label-row">
+            <span class="ovm-section-title">사업계획서 표지</span>
+            <span class="ovm-hint-inline">기관명·유형·연구책임자·기간·정부지원비는 위 입력에서 자동 반영</span>
+          </div>
+
+          <label class="ovm-sub-label">문서 구분 (선택 항목)</label>
+          <div class="ov-cover-grid">
+            <label class="ov-cover-f">과제 유형
+              <select id="cov-proj-type" class="ov-input">
+                <option value="">(선택)</option><option>일반형</option>
+                <option value="통합형">통합형(세부)</option><option value="병렬형">병렬형(세부)</option>
+              </select></label>
+            <label class="ov-cover-f">신청 구분
+              <select id="cov-doc-type" class="ov-input">
+                <option value="">(선택)</option><option>신청용</option>
+                <option>협약용</option><option value="차단계">차단계 제출용</option>
+              </select></label>
+            <label class="ov-cover-f">보안등급
+              <select id="cov-security" class="ov-input">
+                <option value="">(선택)</option><option>일반</option><option>보안</option>
+              </select></label>
+            <label class="ov-cover-f">선정방식
+              <select id="cov-selection" class="ov-input">
+                <option value="">(선택)</option><option>정책지정</option><option>지정공모</option>
+                <option>품목지정</option><option>자유공모</option>
+              </select></label>
+          </div>
+
+          <div class="ov-label-row">
+            <label class="ovm-sub-label">사업 정보</label>
+            <button id="btn-cover-rfp" class="btn-mini2" type="button"
+                    title="업로드된 RFP 원문에서 중앙행정기관·전문기관·세부/내역사업명·공고번호를 추출해 채웁니다">RFP에서 채우기</button>
+          </div>
+          <div class="ov-cover-grid">
+            <label class="ov-cover-f">중앙행정기관명<input id="cov-gov-dept" class="ov-input" placeholder="산업통상부(미입력 시 유지)" /></label>
+            <label class="ov-cover-f">전문기관명<input id="cov-agency" class="ov-input" placeholder="한국산업기술기획평가원(유지)" /></label>
+            <label class="ov-cover-f">세부사업명<input id="cov-sub-biz" class="ov-input" /></label>
+            <label class="ov-cover-f">내역사업명<input id="cov-detail-biz" class="ov-input" /></label>
+            <label class="ov-cover-f">공고번호<input id="cov-notice-no" class="ov-input" /></label>
+            <label class="ov-cover-f">총괄연구개발 과제번호<input id="cov-master-no" class="ov-input" /></label>
+            <label class="ov-cover-f">연구개발 과제번호<input id="cov-task-no" class="ov-input" /></label>
+          </div>
+
+          <label class="ovm-sub-label">연구개발과제명</label>
+          <div class="ov-cover-grid">
+            <label class="ov-cover-f">총괄과제명(국문)<input id="cov-master-title-ko" class="ov-input" /></label>
+            <label class="ov-cover-f">총괄과제명(영문)<input id="cov-master-title-en" class="ov-input" placeholder="국문 입력 시 자동 번역" /></label>
+            <label class="ov-cover-f">과제명(국문)<input id="cov-title-ko" class="ov-input" /></label>
+            <label class="ov-cover-f">과제명(영문)<input id="cov-title-en" class="ov-input" placeholder="국문 입력 시 자동 번역" /></label>
+          </div>
+
+          <div class="ov-label-row">
+            <label class="ovm-sub-label">기술분류 (소분류 명칭 · 비율)</label>
+            <button id="btn-cover-classify" class="btn-mini2" type="button"
+                    title="과제 목표·내용·RFP를 근거로 산업기술분류표·국가과학기술표준분류표의 소분류(1~3순위+비율)를 AI가 제안합니다">AI 분류 제안</button>
+          </div>
+          <div class="ov-class-grid">
+            <span class="ov-class-head">산업기술분류</span>
+            <input id="cov-ind-class1" class="ov-input" placeholder="1순위 명칭" />
+            <input id="cov-ind-pct1" class="ov-input ov-pct" placeholder="%" />
+            <input id="cov-ind-class2" class="ov-input" placeholder="2순위 명칭" />
+            <input id="cov-ind-pct2" class="ov-input ov-pct" placeholder="%" />
+            <input id="cov-ind-class3" class="ov-input" placeholder="3순위 명칭" />
+            <input id="cov-ind-pct3" class="ov-input ov-pct" placeholder="%" />
+            <span class="ov-class-head">국가과학기술분류</span>
+            <input id="cov-nat-class1" class="ov-input" placeholder="1순위 명칭" />
+            <input id="cov-nat-pct1" class="ov-input ov-pct" placeholder="%" />
+            <input id="cov-nat-class2" class="ov-input" placeholder="2순위 명칭" />
+            <input id="cov-nat-pct2" class="ov-input ov-pct" placeholder="%" />
+            <input id="cov-nat-class3" class="ov-input" placeholder="3순위 명칭" />
+            <input id="cov-nat-pct3" class="ov-input ov-pct" placeholder="%" />
+          </div>
+
+          <label class="ovm-sub-label">주관기관 문서정보</label>
+          <div class="ov-cover-grid">
+            <label class="ov-cover-f">사업자등록번호<input id="cov-biz-no" class="ov-input" /></label>
+            <label class="ov-cover-f">법인등록번호<input id="cov-corp-no" class="ov-input" /></label>
+            <label class="ov-cover-f ov-cover-wide">주관기관 주소<input id="cov-address" class="ov-input" /></label>
+          </div>
+
+          <label class="ovm-sub-label">연구개발과제 실무책임자</label>
+          <div class="ov-cover-grid">
+            <label class="ov-cover-f">성명<input id="cov-pm-name" class="ov-input" /></label>
+            <label class="ov-cover-f">직위<input id="cov-pm-title" class="ov-input" /></label>
+            <label class="ov-cover-f">직장전화<input id="cov-pm-tel" class="ov-input" /></label>
+            <label class="ov-cover-f">휴대전화<input id="cov-pm-mobile" class="ov-input" /></label>
+            <label class="ov-cover-f">전자우편<input id="cov-pm-email" class="ov-input" /></label>
+            <label class="ov-cover-f">국가연구자번호<input id="cov-pm-researcher" class="ov-input" /></label>
+          </div>
+        </div>
+
+        <div class="ovm-group-title">Ⅱ. 요약문 입력 · 연구개발 목표 및 내용</div>
+        <!-- 요약문 · 연구개발 목표 및 내용 -->
+        <div class="ovm-section">
+          <div class="ov-label-row">
+            <span class="ovm-section-title">연구개발 목표 및 내용</span>
+            <button id="btn-summary-suggest" class="btn-mini2" type="button"
+                    title="과제명·RFP를 근거로 최종목표·연차별 목표·개발내용을 AI가 먼저 제안합니다(빈 칸만, 수정 가능)">AI 제안</button>
+          </div>
+          <div class="ovm-hint-inline">연차는 위 '연차별 연구기간'에 따라 자동 구성 · 제안 후 자유 수정</div>
+          <label class="ovm-sub-label" for="sum-goal-final">최종목표</label>
+          <textarea id="sum-goal-final" class="ov-input" rows="2" spellcheck="false"
+                    placeholder="예: 운송·설치비 10% 절감형 석션자켓 하부구조물 개발"></textarea>
+          <div id="summary-year-list" class="ov-list"></div>
+        </div>
+      </div>
+
+      <div class="modal-foot">
+        <span id="overview-modal-status" class="overview-status"></span>
+        <span class="modal-foot-spacer"></span>
+        <button id="btn-overview-cancel" class="btn btn-secondary" type="button">닫기</button>
+        <button id="btn-overview-save" class="btn btn-primary" type="button" title="저장(모든 절 작성에 반영)">저장</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 토스트 -->
   <div id="toast" class="toast hidden"></div>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=20260811n"></script>
 </body>
 </html>

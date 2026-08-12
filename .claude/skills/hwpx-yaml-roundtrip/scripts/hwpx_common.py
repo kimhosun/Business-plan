@@ -322,11 +322,14 @@ def _clone_charpr(base: str, new_id: str, height: int, dotum: dict[str, str]) ->
     return re.sub(r"<hh:fontRef\b[^>]*/>", _fix_ref, s, count=1)
 
 
-def _augment_header(header_xml: str, face: str, body_h: int, cell_h: int):
-    """본문/셀용 charPr 두 개를 charProperties 에 추가하고 (header, body_id, cell_id)."""
-    dotum = _font_ids_by_lang(header_xml, face)
-    if not dotum:
-        return header_xml, None, None  # 해당 글꼴이 문서에 없음
+def _augment_header(header_xml: str, face: str, cell_face: str, body_h: int, cell_h: int):
+    """본문/셀용 charPr 두 개를 charProperties 에 추가하고 (header, body_id, cell_id).
+
+    본문 글꼴=face, 표 셀 글꼴=cell_face(문서에 없으면 face 로 폴백)."""
+    body_ids = _font_ids_by_lang(header_xml, face)
+    if not body_ids:
+        return header_xml, None, None  # 본문 글꼴이 문서에 없음
+    cell_ids = _font_ids_by_lang(header_xml, cell_face) or body_ids
     ids = [int(i) for i in re.findall(r'<hh:charPr\s+id="(\d+)"', header_xml)]
     if not ids:
         return header_xml, None, None
@@ -335,8 +338,8 @@ def _augment_header(header_xml: str, face: str, body_h: int, cell_h: int):
     if not bm:
         return header_xml, None, None
     body_id, cell_id = str(max(ids) + 1), str(max(ids) + 2)
-    body_cp = _clone_charpr(bm.group(0), body_id, body_h, dotum)
-    cell_cp = _clone_charpr(bm.group(0), cell_id, cell_h, dotum)
+    body_cp = _clone_charpr(bm.group(0), body_id, body_h, body_ids)
+    cell_cp = _clone_charpr(bm.group(0), cell_id, cell_h, cell_ids)
     header_xml = header_xml.replace(
         "</hh:charProperties>", body_cp + cell_cp + "</hh:charProperties>", 1
     )
@@ -401,13 +404,14 @@ def _rewrite_section_runs(x: str, body_id: str, cell_id: str) -> tuple[str, int]
     return x2, changed
 
 
-def apply_fonts(hwpx_path, *, face: str = "돋움",
+def apply_fonts(hwpx_path, *, face: str = "돋움", cell_face: str | None = None,
                 body_pt: int = 12, cell_pt: int = 8) -> dict:
-    """최종 hwpx 에 '본문 텍스트=face body_pt, 표 셀 텍스트=face cell_pt' 를 전역 적용.
+    """최종 hwpx 에 '본문 텍스트=face body_pt, 표 셀 텍스트=cell_face cell_pt' 를 전역 적용.
 
-    반환: {ok, body_charpr, cell_charpr, runs_changed, reason?}. 실패해도 예외를
-    던지지 않고 ok=False 로 알린다(폰트 적용 실패가 빌드 전체를 막지 않게).
+    cell_face 미지정 시 face 와 동일. 반환: {ok, body_charpr, cell_charpr, runs_changed,
+    reason?}. 실패해도 예외를 던지지 않고 ok=False 로 알린다(폰트 적용 실패가 빌드 전체를 막지 않게).
     """
+    cell_face = cell_face or face
     path = str(hwpx_path)
     try:
         with zipfile.ZipFile(path) as z:
@@ -420,7 +424,8 @@ def apply_fonts(hwpx_path, *, face: str = "돋움",
     if not hdr_name:
         return {"ok": False, "reason": "no header.xml"}
     header = blobs[hdr_name].decode("utf-8")
-    header2, body_id, cell_id = _augment_header(header, face, body_pt * 100, cell_pt * 100)
+    header2, body_id, cell_id = _augment_header(
+        header, face, cell_face, body_pt * 100, cell_pt * 100)
     if body_id is None:
         return {"ok": False, "reason": f"font '{face}' or base charPr not found"}
     blobs[hdr_name] = header2.encode("utf-8")

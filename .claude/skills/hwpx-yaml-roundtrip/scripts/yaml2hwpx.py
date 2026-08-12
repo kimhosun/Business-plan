@@ -166,18 +166,19 @@ def restore(hwpx: str, yaml_dir: str, out: str, template: str | None = None) -> 
         else:
             print(f"[yaml2hwpx] markdown image convert skipped: {mi.get('reason')}")
 
-    # 전역 글꼴/크기 적용: 본문=돋움 12pt, 표 셀=돋움 8pt.
+    # 전역 글꼴/크기 적용: 본문/표 셀 글꼴을 각각 지정(HWPX_FONT / HWPX_CELL_FONT).
     # 기본은 OFF(순수 왕복 무손실 보존) — 사용하려면 HWPX_APPLY_FONTS=1 로 켠다(웹앱이 켬).
     if os.environ.get("HWPX_APPLY_FONTS", "0") not in ("0", "false", "False", ""):
         face = os.environ.get("HWPX_FONT", "돋움")
+        cell_face = os.environ.get("HWPX_CELL_FONT", "") or face  # 표 셀 글꼴(기본=본문과 동일)
         try:
             body_pt = int(os.environ.get("HWPX_BODY_PT", "12"))
             cell_pt = int(os.environ.get("HWPX_CELL_PT", "8"))
         except ValueError:
             body_pt, cell_pt = 12, 8
-        info = apply_fonts(out, face=face, body_pt=body_pt, cell_pt=cell_pt)
+        info = apply_fonts(out, face=face, cell_face=cell_face, body_pt=body_pt, cell_pt=cell_pt)
         if info.get("ok"):
-            print(f"[yaml2hwpx] fonts applied: 본문 {face} {body_pt}pt, 표 {face} {cell_pt}pt "
+            print(f"[yaml2hwpx] fonts applied: 본문 {face} {body_pt}pt, 표 {cell_face} {cell_pt}pt "
                   f"(runs={info.get('runs_changed')})")
         else:
             print(f"[yaml2hwpx] font apply skipped: {info.get('reason')}")

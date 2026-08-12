@@ -18,13 +18,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import claude_service, config, pipeline, presets, regulations, rfp, store, tables
+from . import claude_service, config, doc_fill, pipeline, presets, regulations, rfp, store, tables
 from .schemas import (
     ChatBody,
     GenerateBody,
     InputBody,
+    OverviewBody,
     PromptsBody,
-    RfpAutofillBody,
     TemplateBody,
 )
 
@@ -139,7 +139,11 @@ async def get_tree(pid: str):
 async def get_node(pid: str, nid: str):
     _require_project(pid)
     try:
-        return store.read_node(pid, nid)
+        detail = store.read_node(pid, nid)
+        # 이 절에서 제반사항 중 특히 반영할 항목 안내(UI 표기용)
+        if isinstance(detail, dict):
+            detail["overview_focus"] = claude_service.overview_focus(nid)
+        return detail
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
@@ -173,10 +177,16 @@ def generate_template(pid: str, nid: str, body: GenerateBody):
 async def put_prompts(pid: str, nid: str, body: PromptsBody):
     _require_project(pid)
     _node_or_404(pid, nid)
-    prompts = {"style": body.style or "", "structure": body.structure or ""}
+    # 사용자 소유는 ③(style_extra)·structure 뿐. ②(스킬 제공)·합본 style 은 저장하지 않고
+    # read 시 현재 프리셋에서 파생한다(presets 원천 갱신이 모든 절에 즉시 반영되게).
+    prompts = {"style_extra": body.style_extra or "", "structure": body.structure or ""}
     if body.guidelines is not None:
         prompts["guidelines"] = body.guidelines
     saved = store.write_prompts(pid, nid, prompts)
+    # 응답엔 파생 필드(②·합본)를 채워 준다(프런트 즉시 표시용).
+    skill = presets.preset_for(nid).get("style", "")
+    saved["style_skill"] = skill
+    saved["style"] = presets.combine_style(skill, saved.get("style_extra", "") or "")
     return {"prompts": saved}
 
 
@@ -342,12 +352,15 @@ def chat_node(pid: str, nid: str, body: ChatBody):
     try:
         detail = store.read_node(pid, nid)
         context = {
+            "nid": nid,  # 동향·시장 절이면 참조 이미지(+웹조사)를 붙이는 판단에 쓴다
             "label": detail.get("label", ""),
             "title": detail.get("title", ""),
             "guidelines": detail.get("guidelines") or [],
             "template": detail.get("template") or {},
             "prompts": detail.get("prompts") or {},
             "input": detail.get("input") or "",
+            "rfp": store.read_rfp_text(pid),  # 업로드된 RFP 를 작성 근거로 반영
+            "overview": store.read_overview(pid),  # 제반사항(공통 정보)을 최우선 근거로
         }
         history = detail.get("chat") or []
 
@@ -389,11 +402,16 @@ def convert_node(pid: str, nid: str):
         template = detail.get("template") or {}
         prompts = detail.get("prompts") or {}
         input_text = detail.get("input") or ""
+        rfp_text = store.read_rfp_text(pid)  # 업로드된 RFP 를 변환 근거로 반영
+        overview_text = store.read_overview(pid)  # 제반사항(공통 정보)을 최우선 근거로
 
         # 병합 전 현재 yaml 본문(before) 스냅샷
         before_index = pipeline._all_nodes_by_path(pid)
 
-        result = claude_service.convert_input(input_text, template, prompts, targets)
+        result = claude_service.convert_input(
+            input_text, template, prompts, targets,
+            rfp_text=rfp_text, nid=nid, overview_text=overview_text,
+        )
 
         store.write_result(pid, nid, result)
         pipeline.merge_result_into_yaml(pid, result)
@@ -418,10 +436,14 @@ def convert_node(pid: str, nid: str):
 # ── RFP(제안요청서/공고) 업로드 → 절 자동작성 ────────────────────────────────
 @app.get("/api/projects/{pid}/rfp")
 async def get_rfp(pid: str):
-    """업로드된 RFP 메타(파일명·글자수·업로드시각)와 기본 대상 절 목록."""
+    """업로드된 RFP 메타(파일명·글자수·업로드시각)와 추출 본문 텍스트.
+
+    각 절 편집 화면의 '작성 프롬프트' 아래에 참조용으로 표시하기 위해 text 도 함께 준다.
+    """
     _require_project(pid)
     meta = store.rfp_meta(pid) or {}
-    return {"meta": meta, "sections": rfp.TARGET_SECTIONS}
+    text = store.read_rfp_text(pid) if meta.get("filename") else ""
+    return {"meta": meta, "text": text}
 
 
 @app.post("/api/projects/{pid}/rfp")
@@ -457,29 +479,196 @@ def upload_rfp(pid: str, file: UploadFile = File(...)):
             detail="RFP 에서 텍스트를 찾지 못했습니다(스캔 이미지 PDF 등일 수 있습니다).",
         )
     meta = store.write_rfp_text(pid, text, {"filename": filename, "ext": suffix})
-    return {"filename": filename, "chars": meta.get("chars", len(text)), "sections": rfp.TARGET_SECTIONS}
+    # RFP 내용으로 표지 상단 항목(기관·사업명·공고번호)을 자동 추출해 빈 칸만 채운다(best-effort).
+    cover_filled = _autofill_cover_from_rfp(pid, text)
+    return {
+        "filename": filename, "chars": meta.get("chars", len(text)),
+        "text": text, "cover_filled": cover_filled,
+    }
 
 
-@app.post("/api/projects/{pid}/rfp/autofill")
-def autofill_rfp(pid: str, body: RfpAutofillBody):
-    """업로드된 RFP 로 지정 절들을 병렬 자동작성해 input.md 에 채운다.
+def _autofill_cover_from_rfp(pid: str, rfp_text: str) -> list[str]:
+    """RFP 에서 추출한 표지 항목을 overview.cover 의 **빈 칸에만** 채워 저장. 채운 키 목록 반환.
 
-    body {sections?, apply} · apply 면 yaml 병합까지. → {results:[{nid,title,ok,chars,applied,error}]}
-
-    절마다 Claude 초안을 동시에 생성하므로 sync 라우트(스레드풀)로 둔다.
-    """
-    _require_project(pid)
-    text = store.read_rfp_text(pid)
-    if not text.strip():
-        raise HTTPException(status_code=400, detail="먼저 RFP 를 업로드하세요.")
+    사용자가 이미 입력한 값은 덮지 않는다. LLM 미가용·실패는 조용히 건너뛴다(업로드는 성공 유지)."""
     try:
-        results = rfp.autofill(
-            pid, text, sections=body.sections, apply_yaml=bool(body.apply)
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"자동작성 실패: {exc}") from exc
-    ok = sum(1 for r in results if r.get("ok"))
-    return {"results": results, "ok_count": ok, "total": len(results)}
+        fields = claude_service.cover_autofill_rfp(rfp_text)
+    except Exception:  # noqa: BLE001
+        return []
+    if not fields:
+        return []
+    ov = store.read_overview_data(pid)
+    cover = dict(ov.get("cover") or {})
+    filled: list[str] = []
+    for k, v in fields.items():
+        if v and not str(cover.get(k) or "").strip():
+            cover[k] = v
+            filled.append(k)
+    if filled:
+        ov["cover"] = cover
+        store.write_overview_data(pid, ov)
+    return filled
+
+
+# ── 제반사항(프로젝트 공통 자유입력) — 전체 작성 참고 ────────────────────────
+@app.get("/api/projects/{pid}/overview")
+async def get_overview(pid: str):
+    """전체 절 작성에 공통 참고하는 '제반사항'(구조화 data + LLM용 직렬화 text)."""
+    _require_project(pid)
+    data = store.read_overview_data(pid)
+    text = store.read_overview(pid)
+    return {"data": data, "text": text, "chars": len(text)}
+
+
+@app.put("/api/projects/{pid}/overview")
+async def put_overview(pid: str, body: OverviewBody):
+    """제반사항(구조화) 저장. 이후 이 프로젝트의 모든 절 변환·작성 채팅에 참고로 투입된다.
+
+    body.apply=True(저장 버튼)면 저장 직후 문서 표(표지·요약문·편성도·연구비)에 즉시 반영한다."""
+    _require_project(pid)
+    data = body.data if isinstance(body.data, dict) else {}
+    saved = store.write_overview_data(pid, data)
+    text = store.read_overview(pid)
+    applied = None
+    if getattr(body, "apply", False):
+        try:
+            applied = doc_fill.apply(pid)
+        except Exception as exc:  # noqa: BLE001 - 반영 실패가 저장을 막지 않게
+            applied = {"error": str(exc)[:200]}
+    return {"data": saved, "text": text, "chars": len(text), "applied": applied}
+
+
+@app.post("/api/projects/{pid}/budget/sync-stages")
+def budget_sync_stages(pid: str):
+    """8-1 지원·부담계획 표를 제반사항 단계 수에 맞춰 재구성(단계 블록 복제) 후 채운다.
+
+    구조편집(순수복원→표 XML 조작→재추출)이라 수십 초 걸릴 수 있어 별도 버튼으로 호출한다."""
+    _require_project(pid)
+    rebuilt = None
+    try:
+        rebuilt = _sync_budget_stages(pid)
+    except Exception as exc:  # noqa: BLE001 - 실패 시 원상복구됨(_apply_structural)
+        raise HTTPException(status_code=500, detail=f"8.1 표 재구성 실패: {exc}") from exc
+    applied = doc_fill.apply(pid)
+    return {"rebuilt": rebuilt, "applied": applied}
+
+
+def _sync_budget_stages(pid: str) -> dict:
+    """8-1 지원·부담계획 표를 제반사항 periods 의 '단계 × 연차' 구조로 재구성한다.
+
+    단계별 연차 수를 그대로 반영(연차2 이후에도 비율행 생성)한다."""
+    from collections import defaultdict
+    ov = store.read_overview_data(pid)
+    by_stage: dict[str, int] = defaultdict(int)
+    for p in (ov.get("periods") or []):
+        by_stage[(p.get("stage") or "").strip() or "1"] += 1
+    if not by_stage:
+        return {"changed": False, "reason": "연차 없음"}
+    stages_sorted = sorted(by_stage.keys(),
+                           key=lambda s: int(s) if s.isdigit() else 999)
+    counts = [by_stage[s] for s in stages_sorted]
+    index = pipeline._all_nodes_by_path(pid)
+    tpath = doc_fill._find_table(index, "기관부담연구개발비", "비율(A/E)", "현금(A)")
+    if not tpath:
+        return {"changed": False, "reason": "8-1 표 없음"}
+    info = tables.rebuild_budget_stages(pid, tpath, counts)
+    return {"changed": True, "stages": len(counts), "years": counts, **(info or {})}
+
+
+@app.post("/api/projects/{pid}/budget/sync-detail")
+def budget_sync_detail(pid: str):
+    """8-3 비목별 세부표 개수를 참여기관 수에 맞춰 복제/제거 후 연구개발비 총액을 채운다.
+
+    구조편집(순수복원→문단 복제→재추출)이라 수십 초 걸릴 수 있어 별도 버튼으로 호출한다."""
+    _require_project(pid)
+    rebuilt = None
+    try:
+        rebuilt = _sync_budget_detail(pid)
+    except Exception as exc:  # noqa: BLE001 - 실패 시 원상복구됨(_apply_structural_doc)
+        raise HTTPException(status_code=500, detail=f"8장 세부표 재구성 실패: {exc}") from exc
+    applied = doc_fill.apply(pid)
+    return {"rebuilt": rebuilt, "applied": applied}
+
+
+def _sync_budget_detail(pid: str) -> dict:
+    """8-3 세부표(수정인건비+간접비 비율 시그니처) 개수 = 참여기관 수(name 있는 것)."""
+    ov = store.read_overview_data(pid)
+    n = len([i for i in (ov.get("institutions") or []) if (i.get("name") or "").strip()])
+    if n <= 0:
+        return {"changed": False, "reason": "참여기관 없음"}
+    index = pipeline._all_nodes_by_path(pid)
+    paths = doc_fill._find_tables(index, "수정인건비", "간접비 비율", "연구개발비 총액")
+    if not paths:
+        return {"changed": False, "reason": "세부표 없음"}
+    if len(paths) == n:
+        return {"changed": False, "reason": "이미 일치", "count": n}
+    info = tables.rebuild_budget_detail(pid, n, paths)
+    return {"changed": True, "institutions": n, **(info or {})}
+
+
+# ── 표지 자동채움: RFP 추출 / 기술분류 AI 제안 ───────────────────────────────
+@app.post("/api/projects/{pid}/cover/autofill-rfp")
+def cover_autofill_rfp(pid: str):
+    """업로드된 RFP 에서 표지 상단 항목(중앙행정기관·전문기관·세부/내역사업명·공고번호) 추출."""
+    _require_project(pid)
+    rfp_text = store.read_rfp_text(pid)
+    if not (rfp_text or "").strip():
+        raise HTTPException(status_code=400, detail="RFP 가 업로드되지 않았습니다. 먼저 RFP 를 올려 주세요.")
+    fields = claude_service.cover_autofill_rfp(rfp_text)
+    return {"fields": fields}
+
+
+@app.post("/api/projects/{pid}/cover/classify")
+def cover_classify(pid: str):
+    """과제 내용(표지/요약문 입력 + RFP 요지)으로 산업기술·국가과학기술 분류를 AI 제안."""
+    _require_project(pid)
+    ov = store.read_overview_data(pid)
+    cov = ov.get("cover") or {}
+    sm = ov.get("summary") or {}
+    parts = [
+        cov.get("title_ko") or "", cov.get("master_title_ko") or "",
+        sm.get("goal_final") or "",
+        " ".join((g.get("text") or "") for g in (sm.get("goals") or [])),
+        store.read_overview(pid),
+    ]
+    rfp_text = store.read_rfp_text(pid)
+    if rfp_text:
+        parts.append("[RFP 요지]\n" + rfp_text[:4000])
+    context = "\n".join(p for p in parts if (p or "").strip())
+    if not context.strip():
+        raise HTTPException(status_code=400,
+                            detail="분류 근거가 없습니다. 과제명·목표를 먼저 입력하거나 RFP 를 올려 주세요.")
+    fields = claude_service.cover_classify(context)
+    return {"fields": fields}
+
+
+@app.post("/api/projects/{pid}/summary/suggest")
+def suggest_summary(pid: str):
+    """요약문 '연구개발 목표 및 내용'(최종목표+연차별 목표·개발내용)을 AI 로 제안."""
+    _require_project(pid)
+    ov = store.read_overview_data(pid)
+    cov = ov.get("cover") or {}
+    years = [(p.get("year") or "").strip() for p in (ov.get("periods") or [])
+             if (p.get("year") or "").strip()]
+    parts = [cov.get("title_ko") or "", cov.get("master_title_ko") or "", store.read_overview(pid)]
+    rfp_text = store.read_rfp_text(pid)
+    if rfp_text:
+        parts.append("[RFP]\n" + rfp_text[:6000])
+    context = "\n".join(p for p in parts if (p or "").strip())
+    if not context.strip():
+        raise HTTPException(status_code=400,
+                            detail="근거가 없습니다. 과제명을 입력하거나 RFP 를 올려 주세요.")
+    return claude_service.summary_suggest(context, years)
+
+
+@app.post("/api/projects/{pid}/cover/translate")
+def cover_translate(pid: str, body: dict = Body(...)):
+    """한국어 과제명 → 영어 제목(총괄과제명/과제명 영문 자동채움용)."""
+    _require_project(pid)
+    text = str((body or {}).get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="번역할 텍스트가 없습니다.")
+    return {"en": claude_service.translate_title_ko_en(text)}
 
 
 # ── 빌드/다운로드 ─────────────────────────────────────────────────────────────
@@ -539,6 +728,7 @@ async def build_project(pid: str):
         final_hwpx = out_dir / "final.hwpx"
 
         flushed = _flush_pending_inputs(pid)
+        doc_fill.apply(pid)  # 제반사항 → 표지·요약문·편성도 표 셀 자동 채움
         pipeline.restore(source_hwpx, store.yaml_dir(pid), final_hwpx)
 
         preview_url = ""
@@ -582,6 +772,7 @@ def download_section_hwpx(pid: str, nid: str):
         out_dir.mkdir(parents=True, exist_ok=True)
         final_hwpx = out_dir / "final.hwpx"
         _flush_pending_inputs(pid)
+        doc_fill.apply(pid)  # 제반사항 → 표지·요약문·편성도 표 셀 자동 채움
         pipeline.restore(source_hwpx, store.yaml_dir(pid), final_hwpx)
         return FileResponse(
             str(final_hwpx),
@@ -608,5 +799,18 @@ async def health():
 
 
 # ── 정적 프론트 마운트('/' 는 항상 마지막) ────────────────────────────────────
+class _NoCacheStatic(StaticFiles):
+    """프론트 정적 파일(index.html/app.js/styles.css)을 매번 재검증하게 한다.
+
+    배포(코드 갱신) 후 브라우저가 옛 app.js/index.html 을 캐시해 새 DOM 과 어긋나면
+    '노드 로드 실패' 같은 예외가 난다. no-store 로 캐시를 막아 항상 최신을 받게 한다.
+    """
+
+    async def get_response(self, path, scope):
+        resp = await super().get_response(path, scope)
+        resp.headers["Cache-Control"] = "no-store, must-revalidate"
+        return resp
+
+
 if FRONTEND_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
+    app.mount("/", _NoCacheStatic(directory=str(FRONTEND_DIR), html=True), name="frontend")

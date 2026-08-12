@@ -1,11 +1,20 @@
-# spec: RFP 업로드 → 절 자동작성 (webapp)
+# spec: RFP 업로드 → 각 절 '작성 프롬프트' 아래 참조 표시 (webapp)
 
-RFP(공고·제안요청서)를 올리면 그 내용을 읽어 연구개발계획서의 여러 절을 참조
-프리셋 문체·구성으로 **자동 작성**해 채우는 기능. 관련 주제: [작성 프롬프트](spec_webapp-작성프롬프트.md),
-[변환 출력 품질](spec_webapp-변환출력품질.md).
+RFP(공고·제안요청서)를 올리면 본문을 추출·저장하고, 각 절 편집화면의 **'작성 프롬프트'
+패널 아래에 RFP 본문을 참조용(읽기전용)으로 표시**한다. (초기의 '절 자동작성'은 2026-08-10
+제거됨 — 아래 히스토리 참조.) 관련 주제: [작성 프롬프트](spec_webapp-작성프롬프트.md),
+[변환 출력 품질](spec_webapp-변환출력품질.md), [그림 삽입](spec_hwpx-그림삽입.md).
 
 ## ① 질의·요청 히스토리
 
+- **2026-08-10(후속2)** (원문 요지) "1-1 작성해 ④ 변환까지 했는데 **RFP를 전혀 반영 안 함**.
+  작성 프롬프트(RFP 포함) 내용을 반영해 작성되도록 수정." → ④ 변환·작성 채팅이 RFP 원문을
+  근거로 쓰도록 파이프라인 수정([②③] 참조). 원인: `convert_input`/`chat_write` 가 style·
+  structure·guidelines 만 넘기고 **RFP 를 넘기지 않았음**(참조 표시만 됐지 생성엔 미투입).
+- **2026-08-10** (원문 요지) "RFP 업로드는 놔두고 **자동 작성은 삭제**. RFP 업로드하면 각
+  챕터별로 '작성 프롬프트' 아래에 RFP 내용을 삽입."
+  → 자동작성(autofill) 기능·UI·라우트 제거, RFP는 업로드·추출만 유지하고 각 절의 작성
+  프롬프트 아래에 참조 표시로 전환.
 - **2026-08-06** (원문 요지) "웹 좌측에 RFP(한글 또는 PDF) 업로드 아이콘(글자)을 추가.
   업로드하면 자료를 읽어 **1.1, 1.2, 2.1, 2.2(기본 제안), 4.1, 4.2, 5.1, 5.2, 5.3, 5.5** 절이
   자동 입력되어 LLM이 출력되도록 자동화. 작성 프롬프트는 제안된(프리셋) 프롬프트 사용. 충분한 에이전트 사용."
@@ -14,55 +23,68 @@ RFP(공고·제안요청서)를 올리면 그 내용을 읽어 연구개발계�
   → 조사 결과: 웹 도구가 CLI에서 전면 차단돼 있었고 프롬프트가 '수치는 지어내지 말고 자리표시'를
   지시하고 있었음(그래서 수치 공란). 웹 조사 모드로 전환.
 
-## ② 확정 사양
+## ② 확정 사양 (2026-08-10 개정 — 자동작성 제거, 참조 표시로 전환)
 
-- **대상 절(TARGET_SECTIONS)**: `1-1, 1-2, 2-1, 2-2, 4-1, 4-2, 5-1, 5-2, 5-3, 5-5`
-  (트리 nid). 사용자 요청의 "2.2 기본 제안"은 2-2 를 RFP 근거의 baseline 제안형으로 작성.
-- **입력 형식**: `.pdf`, `.hwpx`, `.hwp`. 텍스트 추출
+- **입력 형식**: `.pdf`, `.hwpx`, `.hwp`. 텍스트 추출(`rfp.extract_rfp_text`)
   - `.pdf` → PyMuPDF(fitz), 실패 시 pdfplumber 폴백.
   - `.hwpx` → `hwpx2yaml.py extract` 로 문단 텍스트 연결(한컴 COM 불필요).
   - `.hwp` → `hwp2hwpx.py convert`(한컴 COM) 후 위와 동일.
   - 추출 텍스트는 `RFP_MAX_CHARS`(기본 48000자)로 절단.
-- **작성 프롬프트 = 제안된 프리셋 + 인터넷 조사**: 절별 `presets.preset_for(nid)`(rnd-write-* 문체·구성)를
-  그대로 문체/구성으로 사용하되, `draft_from_rfp` 는 **웹 조사 모드**로 동작한다.
-  - CLI: `--allowed-tools WebSearch WebFetch`(파일/셸/에이전트 도구는 계속 차단), SDK: 서버측 `web_search` 도구.
-  - 시스템 프롬프트(`_RFP_SYSTEM_RESEARCH`): "지어내지 말고 조사해서 쓴다" — 시장규모·성장률(CAGR)·전망,
-    기술수준·경쟁사, 특허·국제표준(IEC/ISO)·인증·선급, 정책·법령·유사 국책과제 실적을 검색해
-    **핵심 수치에 (출처, 연도) 병기**, 확인 못한 값만 `[○○ 확인 필요]`. 말미에 `[출처]` URL 목록 허용(검토용).
-  - 끄기: `RFP_DISABLE_RESEARCH` 설정 시 예전(자리표시) `_RFP_SYSTEM_NORESEARCH`. 조사 타임아웃 `CLAUDE_RESEARCH_TIMEOUT`(기본 600s).
-  - 병렬성: 조사 켜지면 무거우므로 기본 동시 실행 `5→3`(`RFP_AUTOFILL_WORKERS`로 조정).
-- **에이전트 병렬성**: 절별 초안 생성은 서로 독립 → `ThreadPoolExecutor`(`RFP_AUTOFILL_WORKERS`,
-  기본 5)로 동시에 여러 Claude 호출. **yaml 병합은 `section_*.yaml` 공유 갱신이라 순차**(경합 방지).
-- **결과 반영**:
-  - 기본: 각 절 `input.md` 에 초안 저장(사용자가 검토 후 절별 [변환]으로 yaml 반영).
-  - `apply=true`(UI "YAML 문서까지 반영"): 초안을 `segment_input`(LLM 재호출 없는 결정론적 분할)로
-    나눠 `result.yaml` 저장 + `yaml/section_*.yaml` 병합 → 즉시 [hwpx 빌드] 가능.
-- **호출 폴백**: `draft_from_rfp` 는 API 키 → claude 실행파일 → 스텁(개조식 RFP 발췌) 순. 스텁도
-  절을 채워 실패해도 UI 흐름은 유지.
-- **UI(좌측)**: `[📥 RFP 업로드 · 자동작성]` 라벨(파일선택) + "YAML 문서까지 반영" 체크박스 +
-  상태줄(업로드/작성 경과초). 프로젝트가 없으면 기본 문서로 자동 생성 후 진행. 완료 시 성공 절
-  leaf 에 "✓ 자동작성" 배지, 현재 열린 절이면 입력칸 자동 갱신.
+- **동작**: 업로드 → 추출 → `store` 저장뿐. **절 자동작성(LLM 초안 생성)은 하지 않는다.**
+- **표시**: 각 절 편집화면 **② 작성 프롬프트 패널 아래**에 읽기전용 'RFP 내용' 박스(`#rfp-ref`).
+  파일명·글자수(`#rfp-ref-meta`) + 추출 본문 전체(`#rfp-ref-text`). RFP 없으면 숨김.
+  - 프론트는 프로젝트 열 때 `GET /rfp` 로 `state.rfp={filename,chars,text}` 를 담고, 절을 열
+    때마다 `renderRfpRef()` 로 그 박스를 채운다(모든 절에서 같은 RFP 본문을 참조).
+- **UI(좌측)**: `[📥 RFP 업로드]` 라벨(파일선택) + 상태줄. 프로젝트가 없으면 기본 문서로 자동
+  생성 후 업로드. (기존 "YAML 즉시 반영" 체크박스·"✓ 자동작성" 배지 제거.)
 - **REST**(ARCHITECTURE.md 계약):
-  - `GET  /api/projects/{pid}/rfp` → `{meta,sections}`
-  - `POST /api/projects/{pid}/rfp` (multipart file) → `{filename,chars,sections}`
-  - `POST /api/projects/{pid}/rfp/autofill` `{sections?,apply}` → `{results,ok_count,total}`
-- **저장**: `data/projects/<pid>/rfp/{source.<ext>,rfp.txt,meta.json}`.
+  - `GET  /api/projects/{pid}/rfp` → `{meta, text}`  (text = 추출 본문)
+  - `POST /api/projects/{pid}/rfp` (multipart file) → `{filename, chars, text}`
+  - ~~`POST /api/projects/{pid}/rfp/autofill`~~ — **제거**.
+- **저장**: `data/projects/<pid>/rfp/{source.<ext>,rfp.txt,meta.json}` (변경 없음).
+- **작성 흐름**: 본문 작성은 기존 수동 경로 유지 — ③ 입력 패널(+채팅 `chat_write`)에 쓰고
+  ④ 변환/[hwpx 빌드] 시 `segment_input_packed` 로 yaml 반영. 사용자는 옆의 RFP 참조를 보며 쓴다.
+- **RFP 를 작성 근거로 투입(2026-08-10 후속2)**: ④ 변환(`convert_input`)·작성 채팅(`chat_write`)이
+  **RFP 원문을 생성 컨텍스트로 받는다**.
+  - `convert_node`·chat 라우트가 `store.read_rfp_text(pid)` 를 읽어 `convert_input(..., rfp_text=)`·
+    chat context `rfp` 로 전달. 프롬프트에 `[RFP 원문]` 블록(최대 `CONVERT_RFP_MAX_CHARS`=30000자) 포함.
+  - `_CONVERT_SYSTEM`·`_CHAT_SYSTEM`: "RFP 를 최우선 근거로 반영, 입력이 비어도 RFP 로 이 절을
+    구체화, RFP·입력에 없는 수치는 [○○ 확인 필요]" 규칙 추가. 문체·구성·작성요령은 그대로 준수.
 
-## ③ 구현 상태
+## ③ 구현 상태 (자동작성 제거 완료 2026-08-10)
 
-- [x] `backend/claude_service.py`: `draft_from_rfp`, `segment_input`(+스텁) 추가.
-- [x] `backend/rfp.py` 신규: `extract_rfp_text`, `autofill`(병렬 초안 + 순차 병합).
-- [x] `backend/store.py`: `save_rfp/write_rfp_text/read_rfp_text/rfp_meta` 추가.
-- [x] `backend/schemas.py`: `RfpAutofillBody`.
-- [x] `backend/main.py`: RFP 3개 라우트.
-- [x] `frontend/`: 좌측 RFP 업로드 박스 + 자동작성 흐름 + 배지(index.html, app.js, styles.css).
-- [x] `ARCHITECTURE.md`: 계약·모듈·저장구조·UI 갱신.
+- [x] `backend/rfp.py`: `autofill`·`_context_for`·`_max_workers`·`TARGET_SECTIONS`·`_SPECIAL_NOTE`
+  제거, `extract_rfp_text`(+`_pdf_text`/`_hwpx_text`)만 유지. import(`ThreadPoolExecutor`,
+  `claude_service`) 정리.
+- [x] `backend/main.py`: `autofill_rfp` 라우트 삭제, `get_rfp`→`{meta,text}`, `upload_rfp`→`{filename,chars,text}`.
+- [x] `backend/schemas.py`: `RfpAutofillBody` 삭제(+main import 제거).
+- [x] `frontend/index.html`: RFP 박스 라벨 "RFP 업로드", 즉시반영 체크박스 제거; 작성 프롬프트
+  패널 아래 `#rfp-ref` 박스 추가.
+- [x] `frontend/app.js`: `autofillRfp` API·자동작성 흐름·`state.filled`·`markLeafFilled`·트리 배지
+  제거; `state.rfp`·`renderRfpRef()`·업로드 후 참조 표시 추가.
+- [x] `frontend/styles.css`: `.rfp-ref*` 스타일 추가.
+- [x] 검증(headless chromium): 절 열고 ② 탭 → RFP 박스 표시(파일명·2480자·본문), 라벨=RFP 업로드,
+  체크박스 없음, 콘솔 오류 0. `openapi.json` 에 autofill 경로 없음.
+- 참고: `claude_service.draft_from_rfp`/`_RFP_SYSTEM_*`/`_CHART_GUIDE`/`_IMAGE_GUIDE` 는 이제
+  호출되지 않는 **미사용 코드**로 남음(제거는 후속). `segment_input_packed` 는 빌드 flush 에서
+  계속 사용하므로 유지.
+- (2026-08-10 후속2) RFP 를 변환·채팅 생성 근거로 투입:
+  - `backend/main.py`: `convert_node` 가 `rfp_text=store.read_rfp_text(pid)` 전달, chat 라우트
+    context 에 `rfp` 추가.
+  - `backend/claude_service.py`: `convert_input(...rfp_text)`·`_claude_convert_input` 에 `[RFP 원문]`
+    블록·시스템규칙, `_chat_context_block` 에 `[RFP 원문]`, `_CHAT_SYSTEM` 규칙 1-1 추가.
+    예산 `_CONVERT_RFP_MAX`(=30000자, `CONVERT_RFP_MAX_CHARS`).
+  - 검증: 09754646 1-1 변환(입력 6032자·RFP 2480자) → 결과에 해상풍력·자켓·하부구조·운송·설치·
+    경제성 모두 반영, "수심 30m↑ 15MW급 초대형 해상풍력 실단지·프리파일링 대비 운송·설치 10%
+    단축" 등 RFP 주제로 개조식·정량 작성(13세그먼트, 12초). 콘솔/서버 오류 0.
 
 ## ④ 미결/후속
 
 - 스캔 이미지 PDF(텍스트 레이어 없음)는 추출 0자 → 422 안내. OCR 은 범위 밖.
-- 진행률을 절 단위로 실시간 표기하려면 SSE/폴링 필요(현재는 단일 요청 + 경과초 타이머).
-- 5-4(경제성)·2-3(일정) 등 표 중심 절은 대상에서 제외(표 그리드 입력 경로 사용).
+- RFP 참조는 **절 무관하게 전체 본문**을 그대로 보여 준다. 절별로 관련 구간만 발췌해 보이는
+  기능은 후속(현재는 자동작성 제거로 절별 매핑 로직 없음).
+- 미사용으로 남은 자동작성 코드(`claude_service.draft_from_rfp` 등, [②③] 참조) 정리는 후속.
+- (구) 자동작성 관련 아래 히스토리는 기능 제거 전 기록으로 남겨 둔다(참고용).
 
 ### 2026-08-06 후속 — 자동작성은 본문 필드에만(표 셀 제외)
 - 요청: "국내 기술 동향 및 수준이 표 안에 있는데 필드에 작성하게." → 선택지 중

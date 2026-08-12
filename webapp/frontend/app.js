@@ -11,7 +11,9 @@ const state = {
   tree: [],
   nid: null,
   node: null, // GET /nodes/{nid} 결과
-  filled: new Set(), // RFP 자동작성으로 채워진 절 nid
+  rfp: null, // {filename, chars, text} — 업로드된 RFP(작성 프롬프트 아래 참조 표시)
+  overview: "", // 제반사항 직렬화 텍스트(② 미러 표시용)
+  overviewData: null, // 제반사항 구조화 데이터 {institutions,period,funding,goal}
 };
 
 /* ------------------------------------------------------------------ */
@@ -88,8 +90,8 @@ const API = {
   putTemplate: (pid, nid, template) => api(`/api/projects/${pid}/nodes/${nid}/template`, jsonBody({ template })),
   generateTemplate: (pid, nid, description) =>
     api(`/api/projects/${pid}/nodes/${nid}/template/generate`, postJson({ description })),
-  putPrompts: (pid, nid, style, structure) =>
-    api(`/api/projects/${pid}/nodes/${nid}/prompts`, jsonBody({ style, structure })),
+  putPrompts: (pid, nid, body) =>
+    api(`/api/projects/${pid}/nodes/${nid}/prompts`, jsonBody(body)),
   getPreset: (nid) => api(`/api/presets/${nid}`),
   getTables: (pid, nid) => api(`/api/projects/${pid}/nodes/${nid}/tables`),
   putTables: (pid, nid, cells) => api(`/api/projects/${pid}/nodes/${nid}/tables`, jsonBody({ cells })),
@@ -111,10 +113,20 @@ const API = {
   previewUrl: (pid) => `/api/projects/${pid}/preview.pdf`,
   sectionHwpxUrl: (pid, nid) => `/api/projects/${pid}/nodes/${nid}/section.hwpx`,
   regulationsPdfUrl: (pid, nid) => `/api/projects/${pid}/nodes/${nid}/regulations.pdf`,
+  getRegulation: (nid) => api(`/api/regulations/${nid}`),
   getRfp: (pid) => api(`/api/projects/${pid}/rfp`),
   uploadRfp: (pid, formData) => api(`/api/projects/${pid}/rfp`, { method: "POST", body: formData }),
-  autofillRfp: (pid, sections, apply) =>
-    api(`/api/projects/${pid}/rfp/autofill`, postJson({ sections: sections || null, apply: !!apply })),
+  getOverview: (pid) => api(`/api/projects/${pid}/overview`),
+  saveOverview: (pid, data, apply) => api(`/api/projects/${pid}/overview`, jsonBody({ data, apply: !!apply })),
+  coverAutofillRfp: (pid) => api(`/api/projects/${pid}/cover/autofill-rfp`, { method: "POST" }),
+  coverClassify: (pid) => api(`/api/projects/${pid}/cover/classify`, { method: "POST" }),
+  coverTranslate: (pid, text) => api(`/api/projects/${pid}/cover/translate`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  }),
+  summarySuggest: (pid) => api(`/api/projects/${pid}/summary/suggest`, { method: "POST" }),
+  budgetSyncStages: (pid) => api(`/api/projects/${pid}/budget/sync-stages`, { method: "POST" }),
+  budgetSyncDetail: (pid) => api(`/api/projects/${pid}/budget/sync-detail`, { method: "POST" }),
 };
 
 /* ------------------------------------------------------------------ */
@@ -280,13 +292,14 @@ async function openProject(pid) {
   state.pid = pid;
   state.nid = null;
   state.node = null;
-  state.filled = new Set();
+  state.rfp = null;
   $("#btn-build").disabled = false;
   $("#build-links").classList.add("hidden");
   updateDelButton();
   showNodeEmpty();
   await loadTree();
   refreshRfpStatus();
+  refreshOverview();
 }
 
 async function createProject() {
@@ -336,13 +349,20 @@ async function deleteProject() {
       state.pid = null;
       state.nid = null;
       state.node = null;
-      state.filled = new Set();
+      state.rfp = null;
       $("#btn-build").disabled = true;
       $("#build-links").classList.add("hidden");
       showNodeEmpty();
       $("#tree").innerHTML = "";
       $("#tree").appendChild(el("p", { class: "placeholder", text: "프로젝트를 선택하거나 새로 만드세요." }));
       setRfpStatus("");
+      state.overview = "";
+      state.overviewData = null;
+      renderOverviewForm({});
+      renderOverviewSummary({});
+      setOverviewStatus("");
+      renderOverviewRef();
+      closeOverviewModal(false);
     }
     await loadProjects(state.pid || "");
     if (!state.pid) $("#project-select").value = "";
@@ -403,32 +423,20 @@ function renderTree() {
 }
 
 function makeLeaf(node, isChapter) {
-  const isFilled = state.filled.has(node.id);
   const kids = [
     el("span", { class: "tree-num", text: node.label }),
     el("span", { class: "tree-title-txt", text: node.title || "" }),
   ];
-  if (isFilled) kids.push(el("span", { class: "tree-badge", text: "✓ 자동작성", title: "RFP 기반 자동작성됨" }));
   const leaf = el(
     "div",
     {
-      class: "tree-leaf" + (isChapter ? " chapter-leaf" : "") + (isFilled ? " filled" : ""),
+      class: "tree-leaf" + (isChapter ? " chapter-leaf" : ""),
       "data-nid": node.id,
       onclick: () => selectNode(node.id),
     },
     kids
   );
   return leaf;
-}
-
-// 특정 절 leaf 에 자동작성 배지를 즉시 부여(트리 재렌더 없이).
-function markLeafFilled(nid) {
-  state.filled.add(nid);
-  const leaf = document.querySelector(`.tree-leaf[data-nid="${nid}"]`);
-  if (leaf && !leaf.classList.contains("filled")) {
-    leaf.classList.add("filled");
-    leaf.appendChild(el("span", { class: "tree-badge", text: "✓ 자동작성", title: "RFP 기반 자동작성됨" }));
-  }
 }
 
 function highlightLeaf(nid) {
@@ -453,7 +461,8 @@ async function selectNode(nid) {
     renderNode(node);
     loadTables(nid);
   } catch (e) {
-    toast("노드 로드 실패: " + e.message, "err");
+    console.error("[selectNode] 노드 로드 실패:", e);  // 실제 원인(스택)을 콘솔에 남김
+    toast("노드 로드 실패: " + (e && e.message ? e.message : e), "err");
   }
 }
 
@@ -481,21 +490,32 @@ function renderNode(node) {
   $("#template-text").value = node.template ? YAMLMini.dump(node.template) : "";
   $("#template-desc").value = "";
 
-  // 2) 프롬프트
+  // 2) 프롬프트 — 문체 스타일 3원천(① 한글파일 요구 ② 스킬 제공 ③ 추가) + 구성
+  // setVal: 요소가 없으면(옛 캐시 DOM 등) 조용히 건너뛴다 → 노드 로드 전체가 깨지지 않게.
+  const setVal = (sel, v) => { const e = $(sel); if (e) e.value = v; };
   const p = node.prompts || {};
-  $("#prompt-style").value = p.style || "";
-  $("#prompt-structure").value = p.structure || "";
-  // guidelines 프리필: style 비어있으면 ※ 가이드로 채움
-  if (!p.style && guides.length) {
-    $("#prompt-structure").value = p.structure || guides.join("\n");
-  }
-  // 참조 문체 프리셋 출처(rnd-write-*) 표시
   const preset = node.preset || {};
+  // ① 기존 한글파일에서 요구하는 것 = ※작성요령(guidelines). 읽기전용 참조.
+  const docGuides = (p.guidelines && p.guidelines.length ? p.guidelines : guides) || [];
+  setVal("#prompt-style-doc", docGuides.join("\n"));
+  // ② 스킬로 제공한 것 = rnd-write 작성 스킬(_프롬프트 핵심). read_node 가 항상 현재
+  // 프리셋에서 파생해 style_skill 로 준다(읽기전용, 저장 안 함).
+  setVal("#prompt-style-skill", p.style_skill != null ? p.style_skill : (preset.style || ""));
+  // ③ 추가로 작성 = 사용자 보완분.
+  setVal("#prompt-style-extra", p.style_extra != null ? p.style_extra : "");
+  // 구성(structure)
+  setVal("#prompt-structure",
+    p.structure != null && p.structure !== "" ? p.structure : (preset.structure || ""));
+  // 참조 문체 프리셋 출처(rnd-write-*) 표시
   const skill = preset.skill || p.preset_skill || "";
   const origin = $("#preset-origin");
   if (origin) {
     origin.textContent = skill ? `참조 스킬: ${skill}` : "참조 프리셋 없음";
   }
+  // 작성 프롬프트 아래: 이 절 관련 작성 규정 + RFP 본문(참조용) 표시
+  renderRegRef(node.id);
+  renderRfpRef();
+  renderOverviewRef();
 
   // 3) 입력 + 작성 채팅 이력
   $("#input-text").value = node.input || "";
@@ -573,11 +593,12 @@ async function loadPreset() {
   if (!guardNode()) return;
   try {
     const preset = await API.getPreset(state.nid);
-    $("#prompt-style").value = preset.style || "";
+    // ②(스킬 제공)는 항상 자동 표시(읽기전용)이므로, 이 버튼은 '구성(structure)'만 프리셋으로 채운다.
+    $("#prompt-style-skill").value = preset.style || "";
     $("#prompt-structure").value = preset.structure || "";
     const origin = $("#preset-origin");
     if (origin) origin.textContent = preset.skill ? `참조 스킬: ${preset.skill}` : "참조 프리셋 없음";
-    toast("참조 문체 프리셋을 불러왔습니다(저장 눌러 반영)", "ok");
+    toast("참조 프리셋으로 구성(structure)을 채웠습니다(저장 눌러 반영)", "ok");
   } catch (e) {
     toast("프리셋 불러오기 실패: " + e.message, "err");
   }
@@ -586,8 +607,13 @@ async function loadPreset() {
 async function savePrompts() {
   if (!guardNode()) return;
   try {
-    await API.putPrompts(state.pid, state.nid, $("#prompt-style").value, $("#prompt-structure").value);
-    if (state.node) state.node.prompts = { style: $("#prompt-style").value, structure: $("#prompt-structure").value };
+    // ②(스킬 제공)는 자동 파생·읽기전용이라 저장하지 않는다. 사용자 소유는 ③·구성뿐.
+    const body = {
+      style_extra: $("#prompt-style-extra").value,
+      structure: $("#prompt-structure").value,
+    };
+    const saved = await API.putPrompts(state.pid, state.nid, body);
+    if (state.node) state.node.prompts = saved.prompts || saved;
     toast("작성 프롬프트 저장됨", "ok");
   } catch (e) {
     toast("프롬프트 저장 실패: " + e.message, "err");
@@ -794,7 +820,48 @@ async function openRegulationsPdf() {
 }
 
 /* ------------------------------------------------------------------ */
-/* RFP 업로드 → 절 자동작성                                            */
+/* 이 절 관련 작성 규정(법령·요령·지침) — 작성 프롬프트 하단 표시        */
+/* ------------------------------------------------------------------ */
+async function renderRegRef(nid) {
+  const box = $("#reg-ref");
+  const list = $("#reg-ref-list");
+  const meta = $("#reg-ref-meta");
+  if (!box || !list) return;
+  list.innerHTML = "";
+  box.classList.add("hidden");
+  if (!nid) return;
+  let reg;
+  try {
+    reg = await API.getRegulation(nid);
+  } catch (_) {
+    return; // 규정 조회 실패해도 노드 로드에는 영향 없음
+  }
+  // 다른 절로 이동했으면 반영하지 않음(레이스 방지)
+  if (state.nid !== nid) return;
+  const laws = (reg && reg.laws) || [];
+  if (!laws.length) return;
+  if (meta) {
+    meta.textContent = `— ${laws.length}건` + (reg.reg_as_of ? ` · 기준일 ${reg.reg_as_of}` : "");
+  }
+  laws.forEach((lw) => {
+    const head = [lw.title, lw.kind ? `(${lw.kind})` : ""].filter(Boolean).join(" ");
+    const kids = [
+      el("div", { class: "reg-item-title", text: head }),
+    ];
+    if (lw.article) kids.push(el("div", { class: "reg-item-art", text: lw.article }));
+    if (lw.authority) kids.push(el("div", { class: "reg-item-auth", text: "소관: " + lw.authority }));
+    if (lw.requirement) kids.push(el("div", { class: "reg-item-req", text: lw.requirement }));
+    const foot = [];
+    if (lw.source_url) foot.push(el("a", { class: "reg-item-src", href: lw.source_url, target: "_blank", rel: "noopener", text: "출처 원문" }));
+    if (lw.effective_date) foot.push(el("span", { class: "reg-item-eff", text: "시행 " + lw.effective_date }));
+    if (foot.length) kids.push(el("div", { class: "reg-item-foot" }, foot));
+    list.appendChild(el("div", { class: "reg-item" }, kids));
+  });
+  box.classList.remove("hidden");
+}
+
+/* ------------------------------------------------------------------ */
+/* RFP 업로드 → 각 절 '작성 프롬프트' 아래 참조 표시                    */
 /* ------------------------------------------------------------------ */
 function setRfpStatus(text, kind) {
   const box = $("#rfp-status");
@@ -803,16 +870,767 @@ function setRfpStatus(text, kind) {
   box.className = "rfp-status" + (kind ? " " + kind : "") + (text ? "" : " hidden");
 }
 
-// 업로드된 RFP 가 이미 있으면 상태줄에 표시(프로젝트 열 때).
+// 현재 열린 절의 '작성 프롬프트' 패널 아래에 RFP 본문(state.rfp.text)을 표시/숨김.
+function renderRfpRef() {
+  const box = $("#rfp-ref");
+  const ta = $("#rfp-ref-text");
+  const meta = $("#rfp-ref-meta");
+  if (!box || !ta) return;
+  const rfp = state.rfp;
+  if (rfp && (rfp.text || "").trim()) {
+    ta.value = rfp.text;
+    if (meta) meta.textContent = `— ${rfp.filename || "업로드됨"} (${rfp.chars || rfp.text.length}자)`;
+    box.classList.remove("hidden");
+  } else {
+    ta.value = "";
+    if (meta) meta.textContent = "";
+    box.classList.add("hidden");
+  }
+}
+
+// 프로젝트를 열 때 업로드된 RFP(본문 포함)를 불러와 state 에 담고 상태줄·참조박스 갱신.
 async function refreshRfpStatus() {
-  if (!state.pid) return setRfpStatus("");
+  state.rfp = null;
+  if (!state.pid) {
+    setRfpStatus("");
+    renderRfpRef();
+    return;
+  }
   try {
     const info = await API.getRfp(state.pid);
     const m = (info && info.meta) || {};
-    if (m.filename) setRfpStatus(`RFP: ${m.filename} (${m.chars || 0}자) — 다시 올리면 재작성`, "ok");
-    else setRfpStatus("");
+    if (m.filename) {
+      state.rfp = { filename: m.filename, chars: m.chars || 0, text: info.text || "" };
+      setRfpStatus(`RFP: ${m.filename} (${m.chars || 0}자) — 각 절 '작성 프롬프트' 아래에 표시됨`, "ok");
+    } else {
+      setRfpStatus("");
+    }
   } catch (_) {
     setRfpStatus("");
+  }
+  renderRfpRef();
+}
+
+/* ------------------------------------------------------------------ */
+/* 제반사항(전체 작성 공통 참고) — 좌측 입력 + ② 패널 읽기전용 미러       */
+/* ------------------------------------------------------------------ */
+function setOverviewStatus(text, kind) {
+  const box = $("#overview-status");
+  if (box) {
+    box.textContent = text || "";
+    box.className = "overview-status" + (kind ? " " + kind : "") + (text ? "" : " hidden");
+  }
+  const mbox = $("#overview-modal-status");
+  if (mbox) {
+    mbox.textContent = text || "";
+    mbox.className = "overview-status" + (kind ? " " + kind : "");
+  }
+}
+
+// 좌측 사이드바 요약줄(참여기관·연차·정부출연금 건수).
+function renderOverviewSummary(data) {
+  const box = $("#overview-summary");
+  if (!box) return;
+  data = data || {};
+  const nInst = (data.institutions || []).filter((i) => (i.name || "").trim()).length;
+  const nYear = (data.periods || []).filter((p) => (p.year || "").trim()).length;
+  const nFund = (data.funding || []).filter((f) => (f.amount || "").trim()).length;
+  const cov = data.cover || {};
+  const hasCover = Object.values(cov).some((v) => (v || "").toString().trim());
+  const sm = data.summary || {};
+  const hasSummary = (sm.goal_final || "").trim() ||
+    (sm.goals || []).some((g) => (g.text || "").trim()) ||
+    (sm.contents || []).some((c) => (c.text || "").trim());
+  if (!nInst && !nYear && !nFund && !hasCover && !hasSummary) {
+    box.textContent = "아직 입력된 표지/요약문 내용이 없습니다.";
+    box.classList.remove("filled");
+    return;
+  }
+  const parts = [];
+  if (nInst) parts.push(`참여기관 ${nInst}`);
+  if (nYear) parts.push(`연차 ${nYear}`);
+  if (nFund) parts.push(`정부출연금 ${nFund}건`);
+  if (hasCover) parts.push("표지 ✓");
+  if (hasSummary) parts.push("요약문 ✓");
+  box.textContent = parts.join(" · ") || "입력됨";
+  box.classList.add("filled");
+}
+
+// ② 작성 프롬프트 패널의 읽기전용 미러(#overview-ref)를 state.overview 로 채움/숨김.
+function renderOverviewRef() {
+  const box = $("#overview-ref");
+  const ta = $("#overview-ref-text");
+  const meta = $("#overview-ref-meta");
+  const focus = $("#overview-ref-focus");
+  if (!box || !ta) return;
+  const txt = (state.overview || "").trim();
+  if (txt) {
+    ta.value = state.overview;
+    if (meta) meta.textContent = `— ${txt.length}자 (모든 절 참고)`;
+    // 이 절에서 특히 반영할 항목 안내(백엔드 overview_focus).
+    const f = state.node && state.node.overview_focus;
+    if (focus) {
+      if (f) {
+        focus.textContent = f;
+        focus.classList.remove("hidden");
+      } else {
+        focus.textContent = "";
+        focus.classList.add("hidden");
+      }
+    }
+    box.classList.remove("hidden");
+  } else {
+    ta.value = "";
+    if (meta) meta.textContent = "";
+    if (focus) {
+      focus.textContent = "";
+      focus.classList.add("hidden");
+    }
+    box.classList.add("hidden");
+  }
+}
+
+// ── 구조화 폼: 행(참여기관/정부출연금) 생성 ─────────────────────────────────
+const OV_ROLES = ["주관", "공동"];
+const OV_TYPES = ["비영리", "대기업", "중견기업", "중소기업", "대학", "출연연", "기타"];
+
+function ovMakeInst(inst = {}) {
+  const opt = (arr, sel) =>
+    arr.map((v) => `<option${v === sel ? " selected" : ""}>${v}</option>`).join("");
+  const div = el("div", { class: "ov-card", "data-inst": "1" });
+  div.innerHTML =
+    `<div class="ov-card-row">` +
+    `<select class="ov-inst-role" title="구분">${opt(OV_ROLES, inst.role || "주관")}</select>` +
+    `<select class="ov-inst-type" title="기관형태">${opt(OV_TYPES, inst.type || "비영리")}</select>` +
+    `<button type="button" class="ov-del" title="이 기관 삭제">×</button>` +
+    `</div>` +
+    `<input class="ov-inst-name ov-input" placeholder="기관명" />` +
+    `<input class="ov-inst-duty ov-input" placeholder="주요 담당 연구내용" />` +
+    `<div class="ov-inst-lead">` +
+    `<span class="ov-inst-lead-cap" title="주관기관 책임자는 표지의 '연구책임자'로, 공동기관 책임자는 '공동연구개발기관' 칸으로 들어갑니다">책임자</span>` +
+    `<input class="ov-inst-lead-name ov-input" placeholder="성명" />` +
+    `<input class="ov-inst-lead-title ov-input" placeholder="직위" />` +
+    `<input class="ov-inst-lead-mobile ov-input" placeholder="휴대전화" />` +
+    `<input class="ov-inst-lead-email ov-input" placeholder="전자우편" />` +
+    `</div>`;
+  // 사용자 값은 property 로 넣어 HTML 주입을 피한다.
+  div.querySelector(".ov-inst-name").value = inst.name || "";
+  div.querySelector(".ov-inst-duty").value = inst.duty || "";
+  div.querySelector(".ov-inst-lead-name").value = inst.lead_name || "";
+  div.querySelector(".ov-inst-lead-title").value = inst.lead_title || "";
+  div.querySelector(".ov-inst-lead-mobile").value = inst.lead_mobile || "";
+  div.querySelector(".ov-inst-lead-email").value = inst.lead_email || "";
+  return div;
+}
+
+// 연차별 연구기간 행: 단계 + 차년도 + 기간. 라벨은 "N단계 M차년도".
+function ovMakePeriod(p = {}, idx = 0) {
+  const div = el("div", { class: "ov-prow", "data-period": "1" });
+  div.innerHTML =
+    `<input class="ov-period-stage ov-input ov-narrow3" placeholder="단계" title="단계(예: 1)" />` +
+    `<input class="ov-period-year ov-input ov-narrow2" placeholder="차년도" title="차년도(예: 1차년도)" />` +
+    `<input class="ov-period-range ov-input" placeholder="예: 2026.10~2027.09" />` +
+    `<button type="button" class="ov-del" title="이 연차 삭제">×</button>`;
+  // stage 는 로드 데이터에 없으면 빈 값(구 데이터 호환: 라벨=차년도). 새 행(+연차)은 "1" 로 만든다.
+  div.querySelector(".ov-period-stage").value = p.stage || "";
+  div.querySelector(".ov-period-year").value = p.year || `${idx + 1}차년도`;
+  div.querySelector(".ov-period-range").value = p.range || "";
+  return div;
+}
+
+// 단계+차년도 → 표시/키 라벨. 예 "1단계 1차년도"(단계 없으면 차년도만).
+function ovPeriodLabel(stage, year) {
+  stage = (stage || "").trim();
+  year = (year || "").trim();
+  if (stage && year) return `${stage}단계 ${year}`;
+  return year || (stage ? `${stage}단계` : "");
+}
+
+// ── 정부출연금 매트릭스 그리드(행=참여기관 × 열=연차) ─────────────────────────
+// 셀 금액은 (기관, 연차) 키로 ovFundMap 에 보존. 참여기관/연차가 바뀌면 그리드만
+// 다시 그리되 기존 금액은 유지한다.
+const OV_SEP = ""; // internal key separator (not shown/saved)
+let ovFundMap = {};
+
+const ovFundKey = (org, year) => `${org}${OV_SEP}${year}`;
+const ovNumOnly = (s) => (String(s == null ? "" : s).replace(/[^\d]/g, ""));
+const ovFmt = (n) => (n ? Number(n).toLocaleString("en-US") : "0");
+
+// 현재 폼(DOM)의 참여기관명·연차 라벨(미저장 편집 반영, 빈 값 제외·중복 제거).
+function ovCurrentInstNames() {
+  const seen = new Set();
+  return $$("#inst-list .ov-card .ov-inst-name")
+    .map((i) => (i.value || "").trim())
+    .filter((n) => n && !seen.has(n) && seen.add(n));
+}
+// 현재 폼의 연차 라벨(= "N단계 M차년도") 목록. 정부출연금 그리드·요약문 열 키로 쓰인다.
+function ovCurrentPeriodYears() {
+  const seen = new Set();
+  const out = [];
+  $$("#period-list .ov-prow").forEach((row) => {
+    const s = (row.querySelector(".ov-period-stage") || {}).value || "";
+    const y = (row.querySelector(".ov-period-year") || {}).value || "";
+    const lab = ovPeriodLabel(s, y);
+    if (lab && !seen.has(lab)) { seen.add(lab); out.push(lab); }
+  });
+  return out;
+}
+
+// 그리드 입력 셀 → ovFundMap 반영(재구성 전에 호출해 값 보존).
+function ovReadGridIntoMap() {
+  $$("#fund-grid-wrap .fg-cell").forEach((c) => {
+    const k = c.getAttribute("data-key");
+    if (k) ovFundMap[k] = ovNumOnly(c.value);
+  });
+}
+
+// 행·열·총 합계 재계산.
+function ovRecalcTotals() {
+  const insts = ovCurrentInstNames();
+  const years = ovCurrentPeriodYears();
+  const colSum = years.map(() => 0);
+  let grand = 0;
+  insts.forEach((org, r) => {
+    let row = 0;
+    years.forEach((yr, c) => {
+      const v = Number(ovFundMap[ovFundKey(org, yr)] || 0);
+      row += v;
+      colSum[c] += v;
+    });
+    grand += row;
+    const rc = $(`#fund-grid-wrap .fg-rowtot[data-r="${r}"]`);
+    if (rc) rc.textContent = ovFmt(row);
+  });
+  years.forEach((yr, c) => {
+    const cc = $(`#fund-grid-wrap .fg-coltot[data-c="${c}"]`);
+    if (cc) cc.textContent = ovFmt(colSum[c]);
+  });
+  const gc = $("#fund-grid-wrap .fg-grandtot");
+  if (gc) gc.textContent = ovFmt(grand);
+}
+
+// 참여기관 × 연차로 그리드를 (재)구성. 값은 ovFundMap 에서 복원.
+function renderFundingGrid() {
+  const wrap = $("#fund-grid-wrap");
+  if (!wrap) return;
+  const insts = ovCurrentInstNames();
+  const years = ovCurrentPeriodYears();
+  wrap.innerHTML = "";
+  if (!insts.length || !years.length) {
+    wrap.appendChild(el("div", {
+      class: "fund-grid-empty",
+      text: "참여기관과 연차별 연구기간을 입력하면 정부출연금 표가 자동 생성됩니다.",
+    }));
+    return;
+  }
+  const table = el("table", { class: "fund-grid" });
+  // 헤더
+  const thead = el("thead");
+  const htr = el("tr");
+  htr.appendChild(el("th", { class: "fg-corner", text: "기관 ＼ 연차" }));
+  years.forEach((yr) => htr.appendChild(el("th", { class: "fg-yh", text: yr })));
+  htr.appendChild(el("th", { class: "fg-tot-h", text: "계" }));
+  thead.appendChild(htr);
+  table.appendChild(thead);
+  // 본문
+  const tbody = el("tbody");
+  insts.forEach((org, r) => {
+    const tr = el("tr");
+    tr.appendChild(el("th", { class: "fg-orgh", text: org }));
+    years.forEach((yr, c) => {
+      const td = el("td");
+      const inp = el("input", {
+        class: "fg-cell", type: "text", inputmode: "numeric",
+        "data-key": ovFundKey(org, yr), "data-r": r, "data-c": c,
+        placeholder: "0",
+      });
+      inp.value = ovFundMap[ovFundKey(org, yr)] ? ovFmt(ovFundMap[ovFundKey(org, yr)]) : "";
+      td.appendChild(inp);
+      tr.appendChild(td);
+    });
+    tr.appendChild(el("td", { class: "fg-rowtot", "data-r": r, text: "0" }));
+    tbody.appendChild(tr);
+  });
+  // 합계 행
+  const ftr = el("tr", { class: "fg-totrow" });
+  ftr.appendChild(el("th", { class: "fg-orgh", text: "계" }));
+  years.forEach((_, c) => ftr.appendChild(el("td", { class: "fg-coltot", "data-c": c, text: "0" })));
+  ftr.appendChild(el("td", { class: "fg-grandtot", text: "0" }));
+  tbody.appendChild(ftr);
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  ovRecalcTotals();
+}
+
+// 참여기관/연차 변경 시 그리드 재구성(기존 금액 보존).
+function ovRebuildGrid() {
+  ovReadGridIntoMap();
+  renderFundingGrid();
+}
+
+// ── 표지(사업계획서 표지) 필드 ────────────────────────────────────────────────
+// 표지 입력 필드(입력/셀렉트 공통 — .value 로 읽고/쓴다). id ↔ cover 키.
+const OV_COVER_FIELDS = [
+  // 문서 구분(선택)
+  ["cov-proj-type", "proj_type"], ["cov-doc-type", "doc_type"],
+  ["cov-security", "security"], ["cov-selection", "selection"],
+  // 사업 정보
+  ["cov-gov-dept", "gov_dept"], ["cov-agency", "agency"],
+  ["cov-sub-biz", "sub_biz"], ["cov-detail-biz", "detail_biz"],
+  ["cov-notice-no", "notice_no"], ["cov-master-no", "master_no"], ["cov-task-no", "task_no"],
+  // 과제명
+  ["cov-master-title-ko", "master_title_ko"], ["cov-master-title-en", "master_title_en"],
+  ["cov-title-ko", "title_ko"], ["cov-title-en", "title_en"],
+  // 기술분류
+  ["cov-ind-class1", "ind_class1"], ["cov-ind-pct1", "ind_pct1"],
+  ["cov-ind-class2", "ind_class2"], ["cov-ind-pct2", "ind_pct2"],
+  ["cov-ind-class3", "ind_class3"], ["cov-ind-pct3", "ind_pct3"],
+  ["cov-nat-class1", "nat_class1"], ["cov-nat-pct1", "nat_pct1"],
+  ["cov-nat-class2", "nat_class2"], ["cov-nat-pct2", "nat_pct2"],
+  ["cov-nat-class3", "nat_class3"], ["cov-nat-pct3", "nat_pct3"],
+  // 주관기관 문서정보
+  ["cov-biz-no", "biz_no"], ["cov-corp-no", "corp_no"], ["cov-address", "address"],
+  // 실무책임자
+  ["cov-pm-name", "pm_name"], ["cov-pm-title", "pm_title"], ["cov-pm-tel", "pm_tel"],
+  ["cov-pm-mobile", "pm_mobile"], ["cov-pm-email", "pm_email"],
+  ["cov-pm-researcher", "pm_researcher_no"],
+];
+
+// ── 요약문: 연차별 목표·개발내용(연차 라벨로 보존) ───────────────────────────
+let ovSumGoal = {};     // year → 목표 text
+let ovSumContent = {};  // year → 개발내용 text
+
+function ovReadSummaryIntoMaps() {
+  $$("#summary-year-list .ov-sum-goal").forEach((t) => {
+    ovSumGoal[t.getAttribute("data-year")] = t.value || "";
+  });
+  $$("#summary-year-list .ov-sum-content").forEach((t) => {
+    ovSumContent[t.getAttribute("data-year")] = t.value || "";
+  });
+}
+
+// 현재 연차(연차별 연구기간)에 맞춰 연차별 목표·개발내용 칸을 (재)구성.
+function renderSummaryYears() {
+  const box = $("#summary-year-list");
+  if (!box) return;
+  const years = ovCurrentPeriodYears();
+  box.innerHTML = "";
+  if (!years.length) {
+    box.appendChild(el("div", {
+      class: "fund-grid-empty",
+      text: "연차별 연구기간을 입력하면 연차별 목표·개발내용 칸이 생성됩니다.",
+    }));
+    return;
+  }
+  years.forEach((y) => {
+    const wrap = el("div", { class: "ov-sumrow" });
+    wrap.appendChild(el("div", { class: "ov-sumrow-head", text: y }));
+    const g = el("textarea", {
+      class: "ov-input ov-sum-goal", "data-year": y, rows: "2",
+      spellcheck: "false", placeholder: `${y} 목표`,
+    });
+    g.value = ovSumGoal[y] || "";
+    const c = el("textarea", {
+      class: "ov-input ov-sum-content", "data-year": y, rows: "2",
+      spellcheck: "false", placeholder: `${y} 개발내용`,
+    });
+    c.value = ovSumContent[y] || "";
+    wrap.appendChild(g);
+    wrap.appendChild(c);
+    box.appendChild(wrap);
+  });
+}
+
+// 연차 변경 시 연차별 목표·개발내용 칸 재구성(기존 텍스트 보존).
+function ovRebuildSummary() {
+  ovReadSummaryIntoMaps();
+  renderSummaryYears();
+}
+
+// 구조화 데이터로 폼을 채운다(비어 있으면 참여기관·연차 각각 빈 행 1개).
+function renderOverviewForm(data) {
+  data = data || {};
+  const instList = $("#inst-list");
+  if (instList) {
+    instList.innerHTML = "";
+    const insts = data.institutions || [];
+    (insts.length ? insts : [{}]).forEach((i) => instList.appendChild(ovMakeInst(i)));
+  }
+  const periodList = $("#period-list");
+  if (periodList) {
+    periodList.innerHTML = "";
+    const periods = data.periods || [];
+    (periods.length ? periods : [{}]).forEach((p, i) =>
+      periodList.appendChild(ovMakePeriod(p, i)));
+  }
+  // 정부출연금 맵을 저장된 funding 으로 초기화 후 그리드 렌더.
+  ovFundMap = {};
+  (data.funding || []).forEach((f) => {
+    const org = (f.org || "").trim();
+    const yr = (f.year || "").trim();
+    const amt = ovNumOnly(f.amount);
+    if (org && yr && amt) ovFundMap[ovFundKey(org, yr)] = amt;
+  });
+  renderFundingGrid();
+  // 표지 필드
+  const cov = data.cover || {};
+  OV_COVER_FIELDS.forEach(([id, key]) => {
+    const eln = $("#" + id);
+    if (eln) eln.value = cov[key] || "";
+  });
+  // 요약문: 연차별 목표·개발내용
+  const sm = data.summary || {};
+  ovSumGoal = {};
+  ovSumContent = {};
+  (sm.goals || []).forEach((g) => {
+    if (g && (g.year || "").trim()) ovSumGoal[g.year] = g.text || "";
+  });
+  (sm.contents || []).forEach((c) => {
+    if (c && (c.year || "").trim()) ovSumContent[c.year] = c.text || "";
+  });
+  const gf = $("#sum-goal-final");
+  if (gf) gf.value = sm.goal_final || "";
+  renderSummaryYears();
+}
+
+// 폼 → 구조화 데이터(빈 행은 버린다).
+function collectOverviewData() {
+  const instVal = (c, sel) => (c.querySelector(sel).value || "").trim();
+  const institutions = $$("#inst-list .ov-card")
+    .map((c) => ({
+      role: c.querySelector(".ov-inst-role").value,
+      name: instVal(c, ".ov-inst-name"),
+      type: c.querySelector(".ov-inst-type").value,
+      duty: instVal(c, ".ov-inst-duty"),
+      lead_name: instVal(c, ".ov-inst-lead-name"),
+      lead_title: instVal(c, ".ov-inst-lead-title"),
+      lead_mobile: instVal(c, ".ov-inst-lead-mobile"),
+      lead_email: instVal(c, ".ov-inst-lead-email"),
+    }))
+    .filter((i) => i.name || i.duty || i.lead_name);
+  const periods = $$("#period-list .ov-prow")
+    .map((r) => ({
+      stage: (r.querySelector(".ov-period-stage").value || "").trim(),
+      year: (r.querySelector(".ov-period-year").value || "").trim(),
+      range: (r.querySelector(".ov-period-range").value || "").trim(),
+    }))
+    .filter((p) => p.stage || p.year || p.range);
+  // 정부출연금: 현재 그리드 값을 맵에 반영 후, 기관×연차 조합 중 금액 있는 것만.
+  ovReadGridIntoMap();
+  const names = ovCurrentInstNames();
+  const years = ovCurrentPeriodYears();
+  const funding = [];
+  names.forEach((org) => {
+    years.forEach((yr) => {
+      const amt = ovFundMap[ovFundKey(org, yr)];
+      if (amt) funding.push({ org, year: yr, amount: amt });
+    });
+  });
+  // 하위호환용 period(문자열): 단계·연차별 기간을 요약.
+  const period = periods
+    .map((p) => [ovPeriodLabel(p.stage, p.year), p.range].filter(Boolean).join(": "))
+    .filter(Boolean)
+    .join(" / ");
+  // 표지 필드
+  const cover = {};
+  OV_COVER_FIELDS.forEach(([id, key]) => {
+    const eln = $("#" + id);
+    const v = eln ? (eln.value || "").trim() : "";
+    if (v) cover[key] = v;
+  });
+  // 요약문: 현재 연차 기준 목표·개발내용
+  ovReadSummaryIntoMaps();
+  const goals = years
+    .map((y) => ({ year: y, text: (ovSumGoal[y] || "").trim() }))
+    .filter((g) => g.text);
+  const contents = years
+    .map((y) => ({ year: y, text: (ovSumContent[y] || "").trim() }))
+    .filter((c) => c.text);
+  const summary = {
+    goal_final: (($("#sum-goal-final") || {}).value || "").trim(),
+    goals,
+    contents,
+  };
+  return {
+    institutions,
+    period,
+    periods,
+    funding,
+    goal: "",
+    cover,
+    summary,
+  };
+}
+
+// 프로젝트를 열 때 저장된 제반사항을 불러와 폼·미러를 채운다.
+async function refreshOverview() {
+  state.overview = "";
+  state.overviewData = null;
+  if (!state.pid) {
+    renderOverviewForm({});
+    setOverviewStatus("");
+    renderOverviewRef();
+    return;
+  }
+  try {
+    const info = await API.getOverview(state.pid);
+    state.overviewData = (info && info.data) || {};
+    state.overview = (info && info.text) || "";
+    renderOverviewForm(state.overviewData);
+    setOverviewStatus(state.overview.trim() ? `저장됨 (${state.overview.length}자)` : "", "ok");
+  } catch (_) {
+    renderOverviewForm({});
+    setOverviewStatus("");
+  }
+  renderOverviewSummary(state.overviewData);
+  renderOverviewRef();
+}
+
+// 제반사항 모달 열기/닫기.
+function openOverviewModal() {
+  const m = $("#overview-modal");
+  if (!m) return;
+  if (!state.pid) {
+    toast("프로젝트를 먼저 열어 주세요.", "err");
+    return;
+  }
+  // 현재 저장 데이터로 폼을 다시 채우고 연다.
+  renderOverviewForm(state.overviewData || {});
+  m.classList.remove("hidden");
+  m.setAttribute("aria-hidden", "false");
+  document.body.classList.add("modal-open");
+}
+function closeOverviewModal(save = true) {
+  const m = $("#overview-modal");
+  if (!m || m.classList.contains("hidden")) return;
+  if (save) saveOverview({ silent: true });
+  m.classList.add("hidden");
+  m.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("modal-open");
+}
+
+// {cover키: 값} 을 해당 입력칸에 채운다(빈 값 무시). 채운 개수 반환.
+function ovSetCoverFields(fields) {
+  const byKey = Object.fromEntries(OV_COVER_FIELDS.map(([id, key]) => [key, id]));
+  let n = 0;
+  Object.entries(fields || {}).forEach(([key, val]) => {
+    const id = byKey[key];
+    if (!id) return;
+    const eln = $("#" + id);
+    if (eln && (val || "").toString().trim()) {
+      eln.value = val;
+      n++;
+    }
+  });
+  return n;
+}
+
+// RFP 원문에서 표지 상단 항목(기관·사업명·공고번호) 추출해 채움.
+async function coverAutofillFromRfp() {
+  if (!state.pid) { toast("프로젝트를 먼저 열어 주세요.", "err"); return; }
+  const btn = $("#btn-cover-rfp");
+  setOverviewStatus("RFP에서 표지 항목 추출 중…", "busy");
+  if (btn) btn.disabled = true;
+  try {
+    const res = await API.coverAutofillRfp(state.pid);
+    const n = ovSetCoverFields(res && res.fields);
+    if (n) {
+      await saveOverview({ silent: true });
+      toast(`RFP에서 ${n}개 항목을 채웠습니다.`, "ok");
+      setOverviewStatus(`RFP 자동채움 ${n}개`, "ok");
+    } else {
+      toast("RFP에서 채울 항목을 찾지 못했습니다.", "err");
+      setOverviewStatus("RFP 자동채움: 해당 항목 없음", "");
+    }
+  } catch (e) {
+    toast("RFP 자동채움 실패: " + e.message, "err");
+    setOverviewStatus("RFP 자동채움 실패: " + e.message, "err");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// 국문 과제명 입력 후 이탈 시, 영문칸이 비어 있으면 자동 번역해 채운다.
+let ovTranslating = {};  // 중복 호출 방지
+async function maybeTranslateTitle(koId, enId) {
+  if (!state.pid) return;
+  const ko = $("#" + koId);
+  const en = $("#" + enId);
+  if (!ko || !en) return;
+  const koVal = (ko.value || "").trim();
+  if (!koVal) return;
+  if ((en.value || "").trim()) return;   // 사용자가 영문을 이미 넣었으면 건드리지 않음
+  if (ovTranslating[enId] === koVal) return;
+  ovTranslating[enId] = koVal;
+  setOverviewStatus("영문 과제명 번역 중…", "busy");
+  try {
+    const res = await API.coverTranslate(state.pid, koVal);
+    const enVal = ((res && res.en) || "").trim();
+    if (enVal && !(en.value || "").trim()) {
+      en.value = enVal;
+      await saveOverview({ silent: true });
+      setOverviewStatus("영문 과제명 자동 완성", "ok");
+    } else {
+      setOverviewStatus("", "");
+    }
+  } catch (e) {
+    setOverviewStatus("영문 번역 실패: " + e.message, "err");
+  } finally {
+    delete ovTranslating[enId];
+  }
+}
+
+// 8.1 지원·부담계획 표를 현재 단계 수에 맞춰 재구성(구조편집, 수십 초) 후 채운다.
+async function budgetSyncStages() {
+  if (!state.pid) { toast("프로젝트를 먼저 열어 주세요.", "err"); return; }
+  const btn = $("#btn-budget-sync");
+  // 먼저 현재 내용 저장(문서 반영 포함) 후 구조 재구성.
+  await saveOverview({ silent: true });
+  setOverviewStatus("8.1 표 단계 구조 재구성 중… (수십 초 소요, 표 구조 변경)", "busy");
+  if (btn) btn.disabled = true;
+  try {
+    const res = await API.budgetSyncStages(state.pid);
+    const rb = res && res.rebuilt;
+    if (rb && rb.changed) {
+      toast(`8.1 표를 ${rb.stages}단계 구조로 재구성하고 채웠습니다.`, "ok");
+      setOverviewStatus(`8.1 표 ${rb.stages}단계 반영 완료`, "ok");
+    } else {
+      toast("8.1 표가 이미 현재 단계 구조와 일치합니다(값은 갱신).", "ok");
+      setOverviewStatus("8.1 표 단계 일치 — 값 갱신", "ok");
+    }
+  } catch (e) {
+    toast("8.1 표 재구성 실패: " + e.message, "err");
+    setOverviewStatus("8.1 표 재구성 실패: " + e.message, "err");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// 8장 비목별 세부 사용계획 표를 참여기관 수만큼 복제하고 연구개발비 총액을 채운다(구조편집).
+async function budgetSyncDetail() {
+  if (!state.pid) { toast("프로젝트를 먼저 열어 주세요.", "err"); return; }
+  const btn = $("#btn-detail-sync");
+  await saveOverview({ silent: true });
+  setOverviewStatus("8장 세부표 구조 재구성 중… (수십 초 소요, 표 구조 변경)", "busy");
+  if (btn) btn.disabled = true;
+  try {
+    const res = await API.budgetSyncDetail(state.pid);
+    const rb = res && res.rebuilt;
+    if (rb && rb.changed) {
+      toast(`8장 세부표를 ${rb.institutions}개(기관 수)로 맞추고 연구개발비 총액을 채웠습니다.`, "ok");
+      setOverviewStatus(`8장 세부표 ${rb.institutions}개 반영 완료`, "ok");
+    } else {
+      toast("8장 세부표 개수가 이미 참여기관 수와 일치합니다(값은 갱신).", "ok");
+      setOverviewStatus("8장 세부표 일치 — 값 갱신", "ok");
+    }
+  } catch (e) {
+    toast("8장 세부표 재구성 실패: " + e.message, "err");
+    setOverviewStatus("8장 세부표 재구성 실패: " + e.message, "err");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// 요약문 '연구개발 목표 및 내용'(최종목표+연차별 목표·개발내용)을 AI 가 제안해 빈 칸을 채움.
+async function summarySuggestAi() {
+  if (!state.pid) { toast("프로젝트를 먼저 열어 주세요.", "err"); return; }
+  const btn = $("#btn-summary-suggest");
+  setOverviewStatus("연구개발 목표·내용 제안 중… (십여 초)", "busy");
+  if (btn) btn.disabled = true;
+  try {
+    const res = await API.summarySuggest(state.pid);
+    let n = 0;
+    const gf = $("#sum-goal-final");
+    if (gf && ((res && res.goal_final) || "").trim() && !(gf.value || "").trim()) {
+      gf.value = res.goal_final.trim();
+      n++;
+    }
+    // 현재 연차별 텍스트를 맵에 반영 후, 빈 연차에만 제안을 채운다.
+    ovReadSummaryIntoMaps();
+    const years = new Set(ovCurrentPeriodYears());
+    ((res && res.goals) || []).forEach((g) => {
+      const y = (g.year || "").trim();
+      const t = (g.text || "").trim();
+      if (y && t && years.has(y) && !(ovSumGoal[y] || "").trim()) { ovSumGoal[y] = t; n++; }
+    });
+    ((res && res.contents) || []).forEach((c) => {
+      const y = (c.year || "").trim();
+      const t = (c.text || "").trim();
+      if (y && t && years.has(y) && !(ovSumContent[y] || "").trim()) { ovSumContent[y] = t; n++; }
+    });
+    renderSummaryYears();
+    if (n) {
+      await saveOverview({ silent: true });
+      toast(`목표·내용 ${n}개 항목을 제안했습니다. 수정 가능합니다.`, "ok");
+      setOverviewStatus(`AI 목표·내용 제안 ${n}개`, "ok");
+    } else {
+      toast("이미 채워져 있거나 제안 결과가 없습니다.", "err");
+      setOverviewStatus("AI 제안: 추가 항목 없음", "");
+    }
+  } catch (e) {
+    toast("목표·내용 제안 실패: " + e.message, "err");
+    setOverviewStatus("AI 제안 실패: " + e.message, "err");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// 과제 내용·RFP 로 산업기술·국가과학기술 분류를 AI 가 조사·제안해 채움.
+async function coverClassifyAi() {
+  if (!state.pid) { toast("프로젝트를 먼저 열어 주세요.", "err"); return; }
+  const btn = $("#btn-cover-classify");
+  setOverviewStatus("기술분류 제안 중… (십여 초)", "busy");
+  if (btn) btn.disabled = true;
+  try {
+    const res = await API.coverClassify(state.pid);
+    const n = ovSetCoverFields(res && res.fields);
+    if (n) {
+      await saveOverview({ silent: true });
+      toast(`기술분류 ${n}개 항목을 제안·채웠습니다.`, "ok");
+      setOverviewStatus(`AI 분류 제안 ${n}개`, "ok");
+    } else {
+      toast("기술분류 제안을 받지 못했습니다.", "err");
+      setOverviewStatus("AI 분류 제안: 결과 없음", "");
+    }
+  } catch (e) {
+    toast("AI 분류 제안 실패: " + e.message, "err");
+    setOverviewStatus("AI 분류 제안 실패: " + e.message, "err");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// 폼 내용을 저장하고 미러를 갱신. (버튼/자동저장 공용)
+async function saveOverview(opts = {}) {
+  if (!state.pid) {
+    if (!opts.silent) setOverviewStatus("프로젝트를 먼저 열어 주세요.", "err");
+    return;
+  }
+  const data = collectOverviewData();
+  // 자동저장은 바뀐 게 없으면 조용히 건너뛴다.
+  if (opts.silent && JSON.stringify(data) === JSON.stringify(state.overviewData || {})) return;
+  try {
+    setOverviewStatus(opts.silent ? "저장 중…" : "저장·문서 반영 중…", "busy");
+    // 명시적 저장(저장 버튼)이면 저장 직후 문서 표(표지·요약문·편성도·연구비)에 즉시 반영.
+    const res = await API.saveOverview(state.pid, data, !opts.silent);
+    state.overviewData = (res && res.data) || data;
+    state.overview = (res && res.text) || "";
+    const n = (state.overview || "").length;
+    const cells = res && res.applied && res.applied.cells_written;
+    setOverviewStatus(
+      n ? `저장됨 (${n}자)` + (cells ? ` · 문서 표 ${cells}칸 반영` : "") : "저장됨 (빈 값)", "ok");
+    if (!opts.silent) {
+      toast(cells
+        ? `저장 완료 — 문서 표에 ${cells}칸 반영됨(빌드 시 최종 출력).`
+        : "표지/요약문 저장 완료.", "ok");
+    }
+    renderOverviewSummary(state.overviewData);
+    renderOverviewRef();
+  } catch (e) {
+    const stale = /method not allowed|not found|\b40[45]\b/i.test(e.message || "");
+    const hint = stale ? " — 서버(uvicorn)를 재시작해야 반영됩니다." : "";
+    setOverviewStatus("저장 실패: " + e.message + hint, "err");
+    if (!opts.silent) toast("표지/요약문 저장 실패: " + e.message + hint, "err");
   }
 }
 
@@ -831,7 +1649,7 @@ function stopElapsed() {
 
 async function onRfpSelected(file) {
   if (!file) return;
-  // 프로젝트가 없으면 기본 문서로 자동 생성(자동작성 대상 절 트리가 필요).
+  // 프로젝트가 없으면 기본 문서로 자동 생성(절 트리가 필요).
   if (!state.pid) {
     setRfpStatus("프로젝트가 없어 기본 문서로 새로 생성 중…", "busy");
     try {
@@ -852,47 +1670,29 @@ async function onRfpSelected(file) {
   if (fileInput) fileInput.disabled = true;
 
   try {
-    // 1) 업로드 + 텍스트 추출
+    // 업로드 + 텍스트 추출 → 각 절 '작성 프롬프트' 아래에 참조로 표시.
     startElapsed(`RFP 업로드·분석 중… (${file.name})`);
     const fd = new FormData();
     fd.append("file", file);
     const up = await API.uploadRfp(state.pid, fd);
     stopElapsed();
-    toast(`RFP 분석 완료: ${up.chars}자 추출. 자동작성을 시작합니다.`, "ok");
-
-    // 2) 자동작성(병렬) — 대상 절 전체
-    const sections = up.sections || null;
-    const nSec = (sections && sections.length) || 10;
-    const apply = $("#rfp-apply") && $("#rfp-apply").checked;
-    startElapsed(`AI가 인터넷 조사 기반으로 자동작성 중… ${nSec}개 절 병렬 (조사 포함, 수 분 소요)`);
-    const res = await API.autofillRfp(state.pid, sections, apply);
-    stopElapsed();
-
-    const results = res.results || [];
-    results.forEach((r) => {
-      if (r.ok) markLeafFilled(r.nid);
-    });
-    const failed = results.filter((r) => !r.ok);
-    const okN = res.ok_count != null ? res.ok_count : results.filter((r) => r.ok).length;
-    setRfpStatus(
-      `자동작성 완료 — ${okN}/${results.length}개 절` +
-        (failed.length ? ` (실패: ${failed.map((r) => r.nid).join(", ")})` : "") +
-        (apply ? " · YAML 반영됨" : " · 각 절 [변환]으로 반영"),
-      failed.length ? "warn" : "ok"
-    );
-    toast(`자동작성 완료: ${okN}/${results.length}개 절`, failed.length ? "warn" : "ok");
-
-    // 현재 열린 절이 자동작성 대상이면 다시 로드해 입력칸을 갱신
-    if (state.nid && results.some((r) => r.nid === state.nid && r.ok)) {
-      await selectNode(state.nid);
+    state.rfp = { filename: up.filename || file.name, chars: up.chars || 0, text: up.text || "" };
+    setRfpStatus(`RFP: ${state.rfp.filename} (${up.chars}자) — 각 절 '작성 프롬프트' 아래에 표시됨`, "ok");
+    toast(`RFP 분석 완료: ${up.chars}자 추출. 각 절 '작성 프롬프트' 아래에 표시됩니다.`, "ok");
+    renderRfpRef();
+    // RFP 에서 표지 항목이 자동 채워졌으면 표지/요약문 입력을 새로고침해 반영.
+    const cf = (up && up.cover_filled) || [];
+    if (cf.length) {
+      await refreshOverview();
+      toast(`RFP에서 표지 항목 ${cf.length}개를 자동으로 채웠습니다.`, "ok");
     }
   } catch (e) {
     stopElapsed();
     // 405/Method Not Allowed = 실행 중인 서버에 RFP 라우트가 없음(옛 코드) → 재시작 안내
     const stale = /method not allowed|\b405\b/i.test(e.message || "");
     const hint = stale ? " — 서버(uvicorn)를 재시작해야 RFP 기능이 반영됩니다." : "";
-    setRfpStatus("RFP 자동작성 실패: " + e.message + hint, "err");
-    toast("RFP 자동작성 실패: " + e.message + hint, "err");
+    setRfpStatus("RFP 업로드 실패: " + e.message + hint, "err");
+    toast("RFP 업로드 실패: " + e.message + hint, "err");
   } finally {
     if (label) label.classList.remove("disabled");
     if (fileInput) {
@@ -1202,6 +2002,83 @@ function bindEvents() {
     if (f) onRfpSelected(f);
   });
 
+  // 제반사항 모달 열기/닫기
+  $("#btn-overview-open").addEventListener("click", openOverviewModal);
+  $("#btn-overview-close").addEventListener("click", () => closeOverviewModal(true));
+  $("#btn-overview-cancel").addEventListener("click", () => closeOverviewModal(true));
+  $("#btn-overview-save").addEventListener("click", () => saveOverview());
+  $("#btn-cover-rfp").addEventListener("click", coverAutofillFromRfp);
+  $("#btn-cover-classify").addEventListener("click", coverClassifyAi);
+  $("#btn-summary-suggest").addEventListener("click", summarySuggestAi);
+  $("#btn-budget-sync").addEventListener("click", budgetSyncStages);
+  $("#btn-detail-sync").addEventListener("click", budgetSyncDetail);
+  // 배경(오버레이) 클릭으로 닫기
+  $("#overview-modal").addEventListener("mousedown", (e) => {
+    if (e.target.id === "overview-modal") closeOverviewModal(true);
+  });
+  // ESC 로 닫기
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeOverviewModal(true);
+  });
+  // 행 추가
+  $("#btn-inst-add").addEventListener("click", () => {
+    $("#inst-list").appendChild(ovMakeInst());
+  });
+  $("#btn-period-add").addEventListener("click", () => {
+    const n = $$("#period-list .ov-prow").length;
+    $("#period-list").appendChild(ovMakePeriod({ stage: "1" }, n));
+    ovRebuildGrid();
+    ovRebuildSummary();
+  });
+  // 모달 내 상호작용(위임): 행 삭제 / 그리드 재구성 / 자동 저장
+  const modalBody = $("#overview-modal .modal-body");
+  // 행 삭제(참여기관/연차) → 그리드 갱신 + 자동 저장
+  modalBody.addEventListener("click", (e) => {
+    const del = e.target.closest(".ov-del");
+    if (!del) return;
+    const row = del.closest(".ov-card, .ov-prow");
+    if (row) {
+      const wasPeriod = row.classList.contains("ov-prow");
+      row.remove();
+      ovRebuildGrid();
+      if (wasPeriod) ovRebuildSummary();
+      saveOverview({ silent: true });
+    }
+  });
+  // 금액 셀 입력 중에는 합계만 즉시 갱신.
+  modalBody.addEventListener("input", (e) => {
+    if (e.target.classList.contains("fg-cell")) {
+      const c = e.target;
+      ovFundMap[c.getAttribute("data-key")] = ovNumOnly(c.value);
+      ovRecalcTotals();
+    }
+  });
+  // 참여기관명·연차 라벨을 확정(포커스 이탈)하면 그리드·연차별 요약칸을 재구성.
+  modalBody.addEventListener("change", (e) => {
+    if (e.target.closest(".ov-inst-name, .ov-period-year, .ov-period-stage")) {
+      ovRebuildGrid();
+    }
+    if (e.target.closest(".ov-period-year, .ov-period-stage")) {
+      ovRebuildSummary();
+    }
+  });
+  // 그리드 셀은 포커스 빠질 때 콤마 서식으로 정리.
+  modalBody.addEventListener("focusout", (e) => {
+    if (e.target.classList.contains("fg-cell")) {
+      const v = ovNumOnly(e.target.value);
+      e.target.value = v ? ovFmt(v) : "";
+      saveOverview({ silent: true });
+    } else if (e.target.closest(".ov-input, .ov-inst-role, .ov-inst-type")) {
+      saveOverview({ silent: true });
+      // 국문 과제명 이탈 시 영문 자동 번역(영문칸 비었을 때만).
+      if (e.target.id === "cov-master-title-ko") {
+        maybeTranslateTitle("cov-master-title-ko", "cov-master-title-en");
+      } else if (e.target.id === "cov-title-ko") {
+        maybeTranslateTitle("cov-title-ko", "cov-title-en");
+      }
+    }
+  });
+
   $$(".tab").forEach((t) => t.addEventListener("click", () => switchTab(t.getAttribute("data-tab"))));
 
   $("#btn-template-save").addEventListener("click", saveTemplate);
@@ -1245,6 +2122,8 @@ async function loadRegStatus() {
 
 async function boot() {
   bindEvents();
+  renderOverviewForm({}); // 모달 폼 골격(빈 행) 초기화
+  renderOverviewSummary({});
   loadRegStatus();
   await loadProjects();
   // 프로젝트가 하나면 자동 선택

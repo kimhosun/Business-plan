@@ -182,15 +182,70 @@ html, body {
 .rfp-btn.disabled { opacity: .55; cursor: progress; pointer-events: none; }
 .rfp-ico { font-size: 16px; }
 .rfp-label { flex: 1; }
-.rfp-apply {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+/* 문체 스타일 3원천 그룹 */
+.style-group {
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 14px;
+}
+.style-part-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+#prompt-style-doc,
+#prompt-style-skill {
+  background: var(--chapter-bg, #f6f8fa);
+  color: var(--text-muted);
+}
+
+/* 이 절 관련 작성 규정 */
+.reg-ref { margin-top: 16px; }
+.reg-ref.hidden { display: none; }
+.reg-ref-head { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+.reg-ref-meta { font-weight: 400; font-size: 12px; color: var(--text-muted); }
+.reg-ref-list { display: flex; flex-direction: column; gap: 8px; }
+.reg-item {
+  border: 1px solid var(--border, #d0d7de);
+  border-left: 3px solid #b23b3b;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: var(--chapter-bg, #f6f8fa);
+}
+.reg-item-title { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.reg-item-art { font-size: 12px; color: var(--text); margin-top: 1px; }
+.reg-item-auth { font-size: 11.5px; color: var(--text-muted); margin-top: 1px; }
+.reg-item-req { font-size: 12px; color: var(--text); margin-top: 4px; line-height: 1.5; }
+.reg-item-foot { margin-top: 5px; display: flex; gap: 12px; align-items: center; }
+.reg-item-src { font-size: 11.5px; color: #2E6FB7; }
+.reg-item-eff { font-size: 11px; color: var(--text-muted); }
+.reg-ref-foot { font-size: 11px; color: var(--text-muted); margin-top: 8px; line-height: 1.5; }
+
+/* 작성 프롬프트 아래 RFP 본문(참조용) */
+.rfp-ref { margin-top: 16px; }
+.rfp-ref.hidden { display: none; }
+.rfp-ref-head {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.rfp-ref-meta {
+  font-weight: 400;
   font-size: 12px;
   color: var(--text-muted);
-  cursor: pointer;
 }
-.rfp-apply input { margin: 0; }
+#rfp-ref-text,
+#overview-ref-text {
+  width: 100%;
+  font-size: 12px;
+  line-height: 1.5;
+  background: var(--chapter-bg, #f6f8fa);
+  color: var(--text);
+  resize: vertical;
+}
 .rfp-status {
   font-size: 12px;
   line-height: 1.45;
@@ -203,6 +258,357 @@ html, body {
 .rfp-status.ok { color: var(--ok); }
 .rfp-status.warn { color: var(--accent); }
 .rfp-status.err { color: var(--err); }
+
+/* ---------- 제반사항 입력(RFP 업로드 아래) ---------- */
+.overview-box {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--chapter-bg);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.overview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.overview-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.btn-mini {
+  font-size: 12px;
+  padding: 3px 10px;
+  border: 1px solid var(--chapter);
+  border-radius: var(--radius);
+  background: var(--panel, #fff);
+  color: var(--chapter);
+  cursor: pointer;
+}
+.btn-mini:hover { background: var(--chapter-bg-hover); }
+.overview-input {
+  width: 100%;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel, #fff);
+  color: var(--text);
+  resize: vertical;
+}
+.overview-input::placeholder { color: var(--text-muted); font-size: 11.5px; }
+.overview-status {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-muted);
+  word-break: break-word;
+}
+.overview-status.hidden { display: none; }
+.overview-status.busy { color: var(--accent); }
+.overview-status.busy::before { content: "⏳ "; }
+.overview-status.ok { color: var(--ok); }
+.overview-status.err { color: var(--err); }
+
+/* 제반사항 구조화 폼 */
+.ov-field { display: flex; flex-direction: column; gap: 4px; }
+.ov-field.ov-inline { flex-direction: row; align-items: center; gap: 6px; }
+.ov-label { font-size: 12px; font-weight: 600; color: var(--text); }
+.ov-inline .ov-label { flex: 0 0 auto; }
+.ov-label-row { display: flex; align-items: center; justify-content: space-between; }
+.ov-list { display: flex; flex-direction: column; gap: 6px; }
+.ov-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px;
+  background: var(--panel, #fff);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ov-card-row { display: flex; gap: 4px; align-items: center; }
+.ov-card-row select {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  padding: 3px 2px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel, #fff);
+  color: var(--text);
+}
+.ov-input {
+  width: 100%;
+  font-size: 12px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel, #fff);
+  color: var(--text);
+  box-sizing: border-box;
+}
+/* 참여기관 카드 책임자 정보(표지 연구책임자/공동기관 책임자로 연결) */
+.ov-inst-lead {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin-top: 2px;
+  padding-top: 5px;
+  border-top: 1px dashed var(--border);
+}
+.ov-inst-lead-cap {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+textarea.ov-input { resize: vertical; line-height: 1.45; }
+.ov-inline .ov-input { flex: 1 1 auto; width: auto; }
+.ov-narrow { flex: 0 0 auto; }
+/* 사이드바 제반사항 요약줄 */
+.overview-summary {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-muted);
+  word-break: break-word;
+}
+.overview-summary.filled { color: var(--text); }
+/* 연차별 연구기간 행 */
+.ov-prow { display: flex; gap: 4px; align-items: center; }
+.ov-prow .ov-period-range { flex: 1 1 auto; min-width: 0; }
+.ov-narrow2 { flex: 0 0 auto; width: 74px; }
+.ov-narrow3 { flex: 0 0 auto; width: 46px; }
+.ov-del {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  line-height: 1;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel, #fff);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+}
+.ov-del:hover { color: var(--err); border-color: var(--err); }
+.btn-mini2 {
+  font-size: 11px;
+  padding: 2px 7px;
+  border: 1px solid var(--chapter);
+  border-radius: 4px;
+  background: var(--panel, #fff);
+  color: var(--chapter);
+  cursor: pointer;
+}
+.btn-mini2:hover { background: var(--chapter-bg-hover); }
+
+/* ② 패널 제반사항 미러: 이 절 반영 항목 안내 */
+.overview-ref-focus {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--chapter, #6b4b16);
+  background: var(--chapter-bg, #fff8ec);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 5px 8px;
+  margin-bottom: 6px;
+}
+.overview-ref-focus.hidden { display: none; }
+
+/* ---------- 제반사항 입력 모달(별도 페이지) ---------- */
+body.modal-open { overflow: hidden; }
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 4vh 16px;
+  overflow-y: auto;
+}
+.modal-overlay.hidden { display: none; }
+.modal-card {
+  width: 100%;
+  max-width: 760px;
+  background: var(--panel, #fff);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28);
+  display: flex;
+  flex-direction: column;
+  max-height: 92vh;
+}
+.modal-head {
+  position: relative;
+  padding: 14px 44px 10px 18px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-title { margin: 0; font-size: 16px; font-weight: 700; color: var(--text); }
+.modal-sub {
+  display: block;
+  margin-top: 3px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+.modal-x {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel, #fff);
+  color: var(--text-muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.modal-x:hover { color: var(--err); border-color: var(--err); }
+.modal-body {
+  padding: 14px 18px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.modal-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px;
+  border-top: 1px solid var(--border);
+  background: var(--chapter-bg);
+}
+.modal-foot-spacer { flex: 1 1 auto; }
+.ovm-group-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--chapter, #6b4b16);
+  padding: 6px 0 2px;
+  border-bottom: 2px solid var(--chapter, #6b4b16);
+  margin-top: 4px;
+}
+.ovm-group-title:first-child { margin-top: 0; }
+.ovm-section { display: flex; flex-direction: column; gap: 6px; }
+.ovm-section-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.ovm-hint-inline { font-size: 11px; color: var(--text-muted); }
+
+/* 정부출연금 매트릭스 그리드 */
+.fund-grid-wrap { overflow-x: auto; }
+.fund-grid-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 10px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  text-align: center;
+}
+.fund-grid {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12px;
+}
+.fund-grid th,
+.fund-grid td {
+  border: 1px solid var(--border);
+  padding: 4px 6px;
+  text-align: center;
+  white-space: nowrap;
+}
+.fund-grid thead th,
+.fund-grid .fg-orgh {
+  background: var(--chapter-bg);
+  font-weight: 600;
+  color: var(--text);
+}
+.fund-grid .fg-corner { text-align: left; }
+.fund-grid .fg-orgh { text-align: left; }
+.fund-grid .fg-cell {
+  width: 88px;
+  border: none;
+  background: transparent;
+  text-align: right;
+  font-size: 12px;
+  padding: 2px 4px;
+  color: var(--text);
+}
+.fund-grid .fg-cell:focus { outline: 1px solid var(--accent); border-radius: 3px; }
+.fund-grid .fg-rowtot,
+.fund-grid .fg-coltot,
+.fund-grid .fg-grandtot {
+  text-align: right;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--chapter-bg);
+}
+.fund-grid .fg-totrow th,
+.fund-grid .fg-totrow td { background: var(--chapter-bg); }
+
+/* 표지 필드 그리드 */
+.ov-cover-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 12px;
+}
+.ov-cover-f {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.ov-cover-f input,
+.ov-cover-f select { font-weight: 400; }
+.ov-cover-wide { grid-column: 1 / -1; }
+select.ov-input { height: 27px; }
+/* 기술분류(소분류 명칭 + 비율) */
+.ov-class-grid {
+  display: grid;
+  grid-template-columns: 1fr 52px 1fr 52px 1fr 52px;
+  gap: 4px;
+  align-items: center;
+}
+.ov-class-head {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.ov-class-grid .ov-pct { text-align: center; }
+
+/* 요약문 연차별 목표·개발내용 */
+.ovm-sub-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.ov-sumrow {
+  display: grid;
+  grid-template-columns: 76px 1fr 1fr;
+  gap: 6px;
+  align-items: start;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px;
+  background: var(--panel, #fff);
+}
+.ov-sumrow-head {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--chapter, #6b4b16);
+  padding-top: 4px;
+}
+.ov-sumrow textarea { resize: vertical; }
 
 /* ---------- 트리 ---------- */
 .tree { padding: 6px 0; }

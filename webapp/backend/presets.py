@@ -135,12 +135,25 @@ def _common_style() -> str:
 
 
 def _style_for(nid: str) -> str:
-    """절 nid 의 문체 스타일: 절별 문체(있으면) + 공통 문체 원칙 결합."""
+    """절 nid 의 문체 스타일: 절별 작성 스킬(_프롬프트 핵심, 있으면) + 공통 문체 원칙 결합."""
     common = _common_style()
     sec = _section_style(nid)
     if not sec:
         return common
-    return f"[이 절 문체·형식]\n{sec}\n\n[공통 문체 원칙]\n{common}"
+    return f"[이 절 작성 스킬]\n{sec}\n\n[공통 문체 원칙]\n{common}"
+
+
+def combine_style(skill: str, extra: str) -> str:
+    """문체 스타일 ②(스킬 제공)·③(추가)를 작성 파이프라인용 style 로 합친다.
+
+    ①(기존 한글파일 요구)은 guidelines 로 별도 전달되므로 넣지 않는다(중복 방지).
+    """
+    parts = []
+    if (skill or "").strip():
+        parts.append(skill.strip())
+    if (extra or "").strip():
+        parts.append("[추가 지침]\n" + extra.strip())
+    return "\n\n".join(parts)
 
 
 @lru_cache(maxsize=1)

@@ -449,23 +449,52 @@ def _messages_text(
     web_search=True 면 Anthropic 서버측 web_search 도구를 붙여 인터넷 조사를 시킨다
     (검색·인용은 서버에서 처리되고 최종 text 블록에 조사 반영 결과가 담긴다).
     """
-    kwargs: dict = {
+    base: dict = {
         "model": model,
         "max_tokens": max_tokens,
         "system": system,
         "messages": messages,
     }
-    if web_search:
+
+    def _run(kwargs: dict) -> str:
+        resp = client.messages.create(**kwargs)
+        return "".join(
+            b.text for b in resp.content if getattr(b, "type", None) == "text"
+        )
+
+    if not web_search:
+        return _run(base)
+
+    def _int_env(name: str, default: int) -> int:
         try:
-            max_uses = int(os.environ.get("WEB_SEARCH_MAX_USES", "8"))
+            return int(os.environ.get(name, str(default)))
         except ValueError:
-            max_uses = 8
-        kwargs["tools"] = [
-            {"type": "web_search_20250305", "name": "web_search", "max_uses": max_uses}
-        ]
-    resp = client.messages.create(**kwargs)
-    parts = [b.text for b in resp.content if getattr(b, "type", None) == "text"]
-    return "".join(parts)
+            return default
+
+    # web_search 는 페이지 URL·요지만 준다. 참조 이미지의 '직접 이미지 URL'(.jpg/.png)을
+    # 얻으려면 web_fetch 로 출처 페이지를 열어 <img> 주소를 뽑아야 한다.
+    search = {
+        "type": "web_search_20250305", "name": "web_search",
+        "max_uses": _int_env("WEB_SEARCH_MAX_USES", 8),
+    }
+    fetch = {
+        "type": "web_fetch_20250910", "name": "web_fetch",
+        "max_uses": _int_env("WEB_FETCH_MAX_USES", 5),
+    }
+    # search+fetch → (fetch/beta 미지원) search만 → (도구 미지원) 도구 없이, 단계적 폴백.
+    attempts = [
+        {**base, "tools": [search, fetch],
+         "extra_headers": {"anthropic-beta": "web-fetch-2025-09-10"}},
+        {**base, "tools": [search]},
+        base,
+    ]
+    last: Exception | None = None
+    for kw in attempts:
+        try:
+            return _run(kw)
+        except Exception as exc:  # noqa: BLE001 - 도구/베타 미지원 시 단계적 폴백
+            last = exc
+    raise last if last else RuntimeError("web 호출 실패")
 
 
 _TEMPLATE_SYSTEM = (
@@ -505,11 +534,88 @@ def _claude_generate_template(
 
 
 _CONVERT_SYSTEM = (
-    "당신은 정부 R&D 연구개발계획서 절을 지정된 문체·구성으로 다시 쓰는 편집자다. "
-    "사용자 입력을 요청한 스타일/구조로 재작성하고 정확히 N개의 세그먼트로 나눈다. "
-    "출력은 길이 N의 JSON 문자열 배열 하나뿐이다(마커/번호는 넣지 말 것 — "
-    "번호는 후처리로 붙는다). 코드펜스 밖 설명 금지."
+    "당신은 정부 R&D 연구개발계획서 한 절(節)을 작성하는 편집자다. "
+    "아래 [제반사항]·[RFP 원문]·[사용자 입력]을 근거로, 지정된 [문체]·[구성]·[작성요령]에 맞춰 "
+    "이 절 본문을 작성한다.\n"
+    "규칙\n"
+    "1) **[제반사항]이 있으면 최우선 확정 정보로 반영한다** — 참여기관(주관/공동)·기관형태·"
+    "기관별 역할·연구기간·기관별 정부출연금·주요 연구목표 중 **이 절과 관련되는 항목을 골라** 녹이고, "
+    "**RFP 와 상충하면 제반사항을 따른다**(사용자의 전략·수정). 제반사항 블록 끝의 '※ 이 절에 반영' "
+    "안내가 있으면 그 항목을 우선 활용하고, 이 절과 무관한 항목은 억지로 넣지 않는다.\n"
+    "2) 이어 **RFP 를 근거로 반영한다** — 이 절 주제에 해당하는 RFP 의 배경·목표·요건·범위·수치를 "
+    "녹인다. 사용자 입력이 비었거나 부족하면 제반사항·RFP 근거로 이 절을 구체적으로 작성한다"
+    "(빈 입력이라고 빈 결과를 내지 말 것).\n"
+    "3) [문체]·[구성]·[작성요령]을 반드시 따른다(개조식·정량 표기 등).\n"
+    "4) 제반사항·RFP·입력에 없는 구체 수치는 지어내지 말고 [○○ 확인 필요] 로 남긴다.\n"
+    "5) 정확히 N개의 세그먼트로 나눈다. 출력은 길이 N 의 JSON 문자열 배열 하나뿐이다"
+    "(마커/번호는 넣지 말 것 — 번호는 후처리로 붙는다). 코드펜스 밖 설명 금지."
 )
+
+# 변환 시 RFP 원문 컨텍스트 예산(글자수).
+try:
+    _CONVERT_RFP_MAX = int(os.environ.get("CONVERT_RFP_MAX_CHARS", "30000"))
+except ValueError:
+    _CONVERT_RFP_MAX = 30000
+
+# 제반사항(과제 공통 정보) 컨텍스트 예산(글자수).
+try:
+    _OVERVIEW_MAX = int(os.environ.get("OVERVIEW_MAX_CHARS", "8000"))
+except ValueError:
+    _OVERVIEW_MAX = 8000
+
+
+# 제반사항 4항목 → 반영 대상 장/절 매핑(사용자 지정: 연구내용→1·2장, 참여기관→2·3·5·7·8장 …).
+# (설명, 반영 대상 '장' 집합, 추가로 반영할 개별 '절' 집합)
+_OVERVIEW_ASPECTS = (
+    ("주요 연구목표·내용(RFP 와 다른 전략 포함)",
+     {"1", "2", "4"}, {"5-1", "5-5"}),
+    ("참여기관(주관/공동)·기관형태(비영리·대/중/소기업)·기관별 역할·담당 연구내용",
+     {"2", "3", "5", "7", "8"}, {"1-3", "6-1", "6-2"}),
+    ("연구기간(단계·연차)",
+     {"3", "7", "8"}, {"2-3"}),
+    ("연구기관별·연차별 정부출연금",
+     {"8"}, {"5-4", "3-4"}),
+)
+
+
+def _chapter_of(nid: str) -> str:
+    m = re.match(r"\s*(\d+)", str(nid or ""))
+    return m.group(1) if m else ""
+
+
+def _overview_focus(nid: str) -> str:
+    """이 절(nid)에서 제반사항 중 특히 반영할 항목 안내(절별 활용 매핑)."""
+    n = (nid or "").strip()
+    ch = _chapter_of(n)
+    picks = [label for (label, chaps, secs) in _OVERVIEW_ASPECTS
+             if (ch and ch in chaps) or n in secs]
+    if not picks:
+        return ("※ 이 절에 반영: 제반사항 중 이 절과 직접 관련되는 항목만 (무관하면 억지로 넣지 않음).")
+    body = "; ".join(f"{i + 1}) {p}" for i, p in enumerate(picks))
+    return ("※ 이 절에 반영: 제반사항 중 특히 다음을 우선 활용한다 — " + body
+            + ". 나머지 항목은 이 절과 무관하면 넣지 않는다.")
+
+
+def overview_focus(nid: str) -> str:
+    """절 상세(get_node) 응답에 실어 UI 에 표기하기 위한 공개 래퍼."""
+    return _overview_focus(nid)
+
+
+def _overview_block(overview_text: str, nid: str = "") -> str:
+    """제반사항 텍스트를 프롬프트용 [제반사항] 블록으로. 예산 초과분은 절단.
+
+    nid 를 주면 그 절에서 특히 반영할 항목 안내(_overview_focus)를 블록 끝에 덧붙인다.
+    """
+    ov = (overview_text or "").strip()
+    if len(ov) > _OVERVIEW_MAX:
+        ov = ov[:_OVERVIEW_MAX]
+    block = (
+        "[제반사항(과제 공통 정보 — 참여기관·기관형태·역할·연구기간·기관별 정부출연금·주요 "
+        f"연구목표. RFP 와 상충하면 이것을 우선)]\n{ov or '(입력 없음)'}"
+    )
+    if ov and nid:
+        block += "\n" + _overview_focus(nid)
+    return block
 
 
 def _claude_convert_input(
@@ -517,6 +623,9 @@ def _claude_convert_input(
     template: dict,
     prompts: dict,
     targets: list[str],
+    rfp_text: str = "",
+    nid: str = "",
+    overview_text: str = "",
 ) -> list[dict]:
     n = len(targets)
     prompts = prompts or {}
@@ -524,17 +633,36 @@ def _claude_convert_input(
     structure = prompts.get("structure", "")
     guides = prompts.get("guidelines", []) or []
     guide_txt = "\n".join(f"- {g}" for g in guides[:12])
+    rfp = (rfp_text or "").strip()
+    if len(rfp) > _CONVERT_RFP_MAX:
+        rfp = rfp[:_CONVERT_RFP_MAX]
+    want_img = _wants_reference_images(nid)
+    img_note = (
+        "\n\n[참조 이미지] 이 절은 동향·시장 절이다. 서술한 대상(단지·기업·기술·비용 등)의 실제 "
+        "이미지를 조사해, 관련 세그먼트 텍스트 끝에 줄바꿈으로 '![제목](직접 이미지 URL)' 한 줄과 "
+        "다음 줄 '출처: 매체/기관(연도), URL' 을 덧붙여라(새 도표를 그리지 말고 자료의 이미지를 "
+        f"가져온다). 세그먼트 개수는 정확히 {n}개로 유지한다."
+        if want_img else ""
+    )
     user = (
+        f"{_overview_block(overview_text, nid)}\n\n"
+        f"[RFP 원문]\n{rfp or '(업로드된 RFP 없음)'}\n\n"
         f"[문체(style)]\n{style or '(지정 없음)'}\n\n"
         f"[구성(structure)]\n{structure or '(지정 없음)'}\n\n"
         f"[작성요령]\n{guide_txt or '(없음)'}\n\n"
         f"[사용자 입력]\n{input_text or '(비어있음)'}\n\n"
-        f"위 입력을 지정 문체/구성으로 재작성하고 정확히 {n}개의 세그먼트로 나눠 "
-        f"길이 {n}의 JSON 문자열 배열로만 출력하라."
+        f"위 [제반사항]·[RFP 원문]·[사용자 입력]을 근거로(상충 시 제반사항 우선) 이 절을 지정 "
+        f"문체/구성/작성요령에 맞춰 작성하고, 정확히 {n}개의 세그먼트로 나눠 길이 {n}의 "
+        f"JSON 문자열 배열로만 출력하라."
+        + img_note
     )
     raw = _ask(
-        _CONVERT_SYSTEM, [{"role": "user", "content": user}], max_tokens=8000,
+        _CONVERT_SYSTEM + (_REF_IMAGE_GUIDE if want_img else ""),
+        [{"role": "user", "content": user}],
+        max_tokens=12000 if want_img else 8000,
         schema={"type": "array", "items": {"type": "string"}},
+        allow_tools=_RFP_RESEARCH_TOOLS if want_img else None,
+        timeout=_research_timeout() if want_img else None,
     )
     parsed = json.loads(_extract_fenced(raw, ("json",)))
     if not isinstance(parsed, list):
@@ -550,6 +678,11 @@ _CHAT_SYSTEM = (
     "사용자는 채팅으로 재료·지시를 주고, 당신은 그 절의 본문 초안을 통째로 다시 써 준다.\n"
     "규칙\n"
     "1) 아래 [양식 템플릿]의 번호/마커 규칙과 [작성요령]·[문체]·[구성]을 반드시 따른다.\n"
+    "1-0) [제반사항]이 있으면 참여기관·기관형태·역할·연구기간·기관별 정부출연금·주요 연구목표 중 "
+    "이 절과 관련되는 항목(블록 끝 '※ 이 절에 반영' 안내 우선)을 확정 정보로 최우선 반영하고, "
+    "RFP 와 상충하면 제반사항을 따른다(무관한 항목은 넣지 않는다).\n"
+    "1-1) [RFP 원문]이 있으면 이 절 주제에 해당하는 RFP 의 배경·목표·요건·범위·수치를 "
+    "근거로 반영한다(사용자 지시가 없어도 제반사항·RFP 기반으로 이 절을 구체화한다).\n"
     "2) [현재 작성본]이 있으면 처음부터 새로 쓰지 말고 지시한 부분만 고쳐 전체를 다시 낸다.\n"
     "3) 개조식·정량 표기를 기본으로 하며 근거 없는 수치를 지어내지 않는다. "
     "값이 필요하면 draft 안에 [○○ 확인 필요] 같은 자리표시로 남기고 reply 에서 물어본다.\n"
@@ -576,9 +709,15 @@ def _chat_context_block(context: dict) -> str:
     label = (context.get("label") or "").strip()
     title = (context.get("title") or "").strip()
     current = (context.get("input") or "").strip()
+    rfp = (context.get("rfp") or "").strip()
+    if len(rfp) > _CONVERT_RFP_MAX:
+        rfp = rfp[:_CONVERT_RFP_MAX]
+    overview = context.get("overview") or ""
 
     return (
         f"\n\n[대상 절]\n{label} {title}".rstrip()
+        + f"\n\n{_overview_block(overview, context.get('nid'))}"
+        + f"\n\n[RFP 원문]\n{rfp or '(업로드된 RFP 없음)'}"
         + f"\n\n[작성요령]\n{chr(10).join('- ' + g for g in guides) or '(없음)'}"
         + f"\n\n[양식 템플릿]\n```yaml\n{tpl_yaml}```"
         + f"\n\n[문체]\n{prompts.get('style') or '(지정 없음)'}"
@@ -635,9 +774,14 @@ def _claude_chat_write(context: dict, history: list[dict], message: str) -> dict
     while msgs and msgs[0]["role"] != "user":
         msgs.pop(0)
 
+    want_img = _wants_reference_images((context or {}).get("nid"))
     raw = _ask(
-        _CHAT_SYSTEM + _chat_context_block(context), msgs,
+        _CHAT_SYSTEM + _chat_context_block(context)
+        + (_REF_IMAGE_GUIDE if want_img else ""),
+        msgs,
         max_tokens=16000, schema=_CHAT_SCHEMA,
+        allow_tools=_RFP_RESEARCH_TOOLS if want_img else None,
+        timeout=_research_timeout() if want_img else None,
     )
     try:
         parsed = json.loads(_extract_fenced(raw, ("json",)))
@@ -737,6 +881,43 @@ _IMAGE_GUIDE = (
     "  URL은 실제 이미지 파일(.png/.jpg/.gif 등)로 직접 열리는 것만, 확실할 때만 넣는다"
     "(웹페이지·검색결과 링크는 넣지 않는다)."
 )
+
+# 참조 이미지(뉴스·보도자료·참고문헌에서 '가져온' 실제 이미지) 삽입 지침.
+# 철회된 _CHART_GUIDE(도표 자동생성)와 달리 새 그림을 그리지 않고, 서술에서 언급한
+# 대상(단지·기업·기술·비용 등)의 '실제' 이미지를 조사해 제목·출처와 함께 본문에 끼운다.
+# 동향·시장 성격 절(_wants_reference_images)의 작성 경로에만 붙는다.
+_REF_IMAGE_GUIDE = (
+    "\n참조 이미지(실제 자료에서 가져오기 — 새로 그리지 말 것)\n"
+    "- 이 절 서술에서 특정 대상을 언급하면(예: 특정 해상풍력 단지·기업·설비·기술, 또는 "
+    "건설단가·시장규모 같은 수치), 그 내용과 직접 관련된 '실제 이미지'를 WebSearch/WebFetch 로 "
+    "조사해 해당 서술 바로 아래에 끼운다. 도표를 새로 그리지 말고, 뉴스·보도자료·참고문헌·"
+    "기관 보고서에 실린 사진·그래프·개념도를 그대로 가져온다.\n"
+    "- 예: 국외 기술 동향에서 'Seagreen 해상풍력'을 서술했으면 그 단지 사진을, 건설비를 언급했으면 "
+    "해상풍력 건설단가 그래프 이미지를 찾아 넣는다.\n"
+    "- 형식(본문 흐름 속에 한 줄씩, 관련 서술 바로 아래):\n"
+    "![그림 제목(무엇인지 알 수 있게)](직접 열리는 이미지 URL)\n"
+    "출처: 매체/기관명(연도), 원문 URL\n"
+    "- URL 은 실제 이미지 파일(.png/.jpg/.jpeg/.gif 등)로 직접 열리는 것만 넣는다"
+    "(웹페이지·검색결과·썸네일 링크 금지). 확실치 않으면 그 이미지는 넣지 않는다"
+    "(존재하지 않는 URL 을 지어내지 않는다).\n"
+    "- 방법: web_search 로 관련 기사·보도자료·위키 페이지를 찾은 뒤, 그 페이지를 web_fetch(또는 "
+    "WebFetch)로 실제로 열어 본문 안 사진/그래프의 '이미지 주소'(<img> 의 src, 보통 .jpg/.png 로 끝남)를 "
+    "그대로 복사해 넣는다. 위키피디아/위키미디어 커먼즈(upload.wikimedia.org)의 직접 이미지 URL 도 좋다. "
+    "검색만으로 직접 이미지 URL 이 확인되지 않으면 그 그림은 넣지 않는다."
+)
+
+
+def _reference_image_nids() -> set[str]:
+    """참조 이미지를 붙일 '동향·시장' 성격 절의 nid 집합. IMAGE_SECTIONS 로 재정의."""
+    raw = os.environ.get("IMAGE_SECTIONS", "").strip()
+    if raw:
+        return {t.strip() for t in raw.replace(",", " ").split() if t.strip()}
+    return {"1-2", "5-1"}
+
+
+def _wants_reference_images(nid: str | None) -> bool:
+    """이 절이 참조 이미지 삽입(+웹조사) 대상인지."""
+    return bool(nid) and str(nid).strip() in _reference_image_nids()
 
 
 def _rfp_context_block(context: dict) -> str:
@@ -893,11 +1074,15 @@ def convert_input(
     template: dict | None,
     prompts: dict | None,
     targets: list[str] | None,
+    rfp_text: str = "",
+    nid: str = "",
+    overview_text: str = "",
 ) -> list[dict]:
-    """사용자 입력을 재작성·분할해 targets에 매핑한 [{path,marker,text}] 반환.
+    """[제반사항]+[RFP 원문]+[사용자 입력]을 근거로 이 절을 작성·분할해 targets에 매핑한 반환.
 
-    API 키 → claude 실행파일 → 스텁 순으로 폴백한다.
-    반환 길이는 항상 len(targets)와 같다.
+    API 키 → claude 실행파일 → 스텁 순으로 폴백한다. 반환 길이는 항상 len(targets)와 같다.
+    nid 가 동향·시장 절(_wants_reference_images)이면 웹조사로 참조 이미지를 함께 끼운다.
+    overview_text(제반사항)는 RFP 와 상충 시 우선하는 공통 정보로 투입한다.
     """
     template = template if isinstance(template, dict) else {}
     prompts = prompts if isinstance(prompts, dict) else {}
@@ -906,7 +1091,10 @@ def convert_input(
         return []
 
     try:
-        return _claude_convert_input(input_text, template, prompts, targets)
+        return _claude_convert_input(
+            input_text, template, prompts, targets,
+            rfp_text=rfp_text, nid=nid, overview_text=overview_text,
+        )
     except Exception:  # noqa: BLE001 - 어떤 오류든 스텁 폴백
         return _stub_convert_input(input_text, template, prompts, targets)
 
@@ -932,6 +1120,174 @@ def chat_write(
         return _claude_chat_write(context, history, message)
     except Exception as exc:  # noqa: BLE001 - 어떤 오류든 스텁 폴백(사유는 답변에 남긴다)
         return _stub_chat_write(context, history, message, reason=str(exc)[:200])
+
+
+# ── 표지 자동채움: RFP 추출 / 기술분류 제안 ──────────────────────────────────
+def _parse_json_obj(raw: str) -> dict:
+    """LLM 출력에서 JSON 객체를 뽑아 dict 로. 실패하면 {}."""
+    try:
+        obj = json.loads(_extract_fenced(raw or "", ("json",)))
+        return obj if isinstance(obj, dict) else {}
+    except Exception:  # noqa: BLE001
+        # 본문 어딘가의 {...} 블록을 관대하게 시도
+        m = re.search(r"\{.*\}", raw or "", re.DOTALL)
+        if m:
+            try:
+                obj = json.loads(m.group(0))
+                return obj if isinstance(obj, dict) else {}
+            except Exception:  # noqa: BLE001
+                return {}
+        return {}
+
+
+_COVER_RFP_SYSTEM = (
+    "당신은 정부 R&D 공고문/품목 설명(RFP)에서 '사업계획서 표지' 항목을 추출하는 도우미다. "
+    "아래 RFP 원문에서 다음 값을 찾아 **JSON 객체 하나만** 출력한다.\n"
+    "- gov_dept: 중앙행정기관명(예: 산업통상자원부)\n"
+    "- agency: 전문기관명(예: 한국산업기술기획평가원·한국에너지기술평가원·KEIT·KETEP)\n"
+    "- sub_biz: 세부사업명(명시 없으면 사업명·분야·미션 등 사업을 가리키는 가장 가까운 명칭)\n"
+    "- detail_biz: 내역사업명\n"
+    "- notice_no: 공고번호 또는 관리번호(예: 제2026-000호, 2026-3차-○○-01)\n"
+    "- title_ko: 과제명(국문) — RFP 의 과제명·품목명\n"
+    "- task_no: 연구개발 과제번호(관리번호와 별개로 명시된 경우)\n"
+    "- ind_class1: 산업기술분류(대/중/소분류 중 가장 구체적인 명칭, 예: 조선/해양시스템)\n"
+    "- ind_class2: 산업기술분류 2순위(있을 때)\n"
+    "규칙: RFP 원문에 있거나 명확히 대응하는 값만 넣는다. 근거 없는 값은 그 키를 빈 문자열(\"\")로 두거나 "
+    "생략한다(창작 금지). 코드펜스 밖 설명 없이 JSON 만 출력."
+)
+
+_COVER_RFP_KEYS = (
+    "gov_dept", "agency", "sub_biz", "detail_biz", "notice_no",
+    "title_ko", "task_no", "ind_class1", "ind_class2",
+)
+
+
+def cover_autofill_rfp(rfp_text: str) -> dict:
+    """RFP 원문에서 표지 상단 항목(gov_dept·agency·sub_biz·detail_biz·notice_no)을 추출."""
+    text = (rfp_text or "").strip()
+    if not text:
+        return {}
+    user = f"[RFP 원문]\n{text[:_CONVERT_RFP_MAX]}\n\n위에서 표지 항목을 JSON 으로 추출하라."
+    try:
+        raw = _ask(_COVER_RFP_SYSTEM, [{"role": "user", "content": user}], max_tokens=800)
+    except Exception:  # noqa: BLE001
+        return {}
+    obj = _parse_json_obj(raw)
+    return {k: str(obj.get(k, "") or "").strip() for k in _COVER_RFP_KEYS
+            if str(obj.get(k, "") or "").strip()}
+
+
+_COVER_CLASS_SYSTEM = (
+    "당신은 국가 R&D 과제의 '기술분류'를 정하는 전문가다. 아래 [과제 내용]을 근거로 "
+    "(1) 산업통상자원부·KEIT의 **산업기술분류표**와 (2) **국가과학기술표준분류표**의 소분류를 "
+    "각각 1~3순위로 제안한다.\n"
+    "- 산업기술분류표: 대분류(기계·소재, 전기·전자, 정보통신, 화학공정, 바이오·의료, "
+    "에너지·자원, 조선·해양, 건설·교통, 지식서비스 등) → 중분류 → 소분류 체계. 과제에 가장 "
+    "부합하는 **소분류 명칭**을 쓴다(예: 조선/해양시스템, 해양플랜트, 자율운항시스템).\n"
+    "- 국가과학기술표준분류표: 대분류(기계, 재료, 화학, 전기/전자, 정보/통신, 에너지/자원, "
+    "건설/교통, 조선/해양, 환경 등) → 중분류 → 소분류 체계. 과제에 맞는 **소분류 명칭**을 쓴다.\n"
+    "규칙: 두 공식 분류표에 실제 존재하는 표준 명칭을 사용한다(임의 창작 금지, 애매하면 상위 "
+    "중분류 명칭). RFP 에 이미 명시된 산업기술분류가 있으면 그것을 1순위로 존중한다. 각 분류의 "
+    "1~3순위 비율(%) 합=100. 2·3순위가 불확실하면 비운다.\n"
+    "출력은 **JSON 객체 하나만**:\n"
+    '{"ind_class1","ind_pct1","ind_class2","ind_pct2","ind_class3","ind_pct3",'
+    '"nat_class1","nat_pct1","nat_class2","nat_pct2","nat_class3","nat_pct3"}\n'
+    "비율은 '60%' 처럼 %를 포함. 코드펜스 밖 설명 없이 JSON 만 출력."
+)
+
+_COVER_CLASS_KEYS = (
+    "ind_class1", "ind_pct1", "ind_class2", "ind_pct2", "ind_class3", "ind_pct3",
+    "nat_class1", "nat_pct1", "nat_class2", "nat_pct2", "nat_class3", "nat_pct3",
+)
+
+
+def cover_classify(context_text: str) -> dict:
+    """과제 내용(제목·목표·RFP 요지)으로 산업기술/국가과학기술 분류 1~3순위를 제안.
+
+    두 공식 분류표에 대한 모델 지식으로 제안한다(웹 조사는 지연·불안정해 사용하지 않음)."""
+    ctx = (context_text or "").strip()
+    if not ctx:
+        return {}
+    user = (
+        f"[과제 내용]\n{ctx[:6000]}\n\n"
+        "위 과제 목표·내용에 맞는 산업기술분류·국가과학기술표준분류 소분류를 1~3순위로 JSON 제안하라."
+    )
+    try:
+        raw = _ask(_COVER_CLASS_SYSTEM, [{"role": "user", "content": user}], max_tokens=1200)
+    except Exception:  # noqa: BLE001
+        return {}
+    obj = _parse_json_obj(raw)
+    return {k: str(obj.get(k, "") or "").strip() for k in _COVER_CLASS_KEYS
+            if str(obj.get(k, "") or "").strip()}
+
+
+_SUMMARY_SUGGEST_SYSTEM = (
+    "당신은 정부 R&D 연구개발계획서 '요약문'의 [연구개발 목표 및 내용]을 작성하는 편집자다. "
+    "아래 [과제 내용](과제명·RFP·제반사항 등)을 근거로 (1) 최종목표, (2) 각 연차별 목표, "
+    "(3) 각 연차별 개발내용을 제안한다.\n"
+    "규칙: 연차 라벨은 사용자가 준 [연차 목록]을 그대로 쓴다(목록에 있는 연차만). 각 목표·내용은 "
+    "개조식으로 간결하게(1~3줄), RFP·과제 내용에 부합하게 작성한다. 근거 없는 구체 수치는 지어내지 "
+    "말고 '[○○ 확인 필요]' 로 남긴다.\n"
+    "출력은 **JSON 객체 하나만**: "
+    '{"goal_final": "...", "goals": [{"year":"1차년도","text":"..."}, ...], '
+    '"contents": [{"year":"1차년도","text":"..."}, ...]}. 코드펜스 밖 설명 금지.'
+)
+
+
+def summary_suggest(context_text: str, years: list[str] | None = None) -> dict:
+    """과제 내용으로 요약문 '연구개발 목표 및 내용'(최종목표+연차별 목표·개발내용)을 제안."""
+    ctx = (context_text or "").strip()
+    if not ctx:
+        return {}
+    yl = ", ".join(y for y in (years or []) if y) or "(연차 미정)"
+    user = (
+        f"[연차 목록]\n{yl}\n\n[과제 내용]\n{ctx[:6000]}\n\n"
+        "위 근거로 최종목표·연차별 목표·연차별 개발내용을 JSON 으로 제안하라."
+    )
+    try:
+        raw = _ask(_SUMMARY_SUGGEST_SYSTEM, [{"role": "user", "content": user}], max_tokens=2000)
+    except Exception:  # noqa: BLE001
+        return {}
+    obj = _parse_json_obj(raw)
+    if not isinstance(obj, dict):
+        return {}
+
+    def _norm(lst) -> list[dict]:
+        out = []
+        for it in (lst or []):
+            if isinstance(it, dict):
+                y = str(it.get("year", "") or "").strip()
+                t = str(it.get("text", "") or "").strip()
+                if t:
+                    out.append({"year": y, "text": t})
+        return out
+
+    return {
+        "goal_final": str(obj.get("goal_final", "") or "").strip(),
+        "goals": _norm(obj.get("goals")),
+        "contents": _norm(obj.get("contents")),
+    }
+
+
+_TRANSLATE_TITLE_SYSTEM = (
+    "당신은 정부 R&D 연구개발과제명을 한국어→영어로 옮기는 전문 번역가다. "
+    "주어진 한국어 과제명을 학술·공식 제안서에 어울리는 자연스러운 영어 제목으로 번역한다. "
+    "규칙: 영어 제목 '한 줄'만 출력(따옴표·설명·코드펜스·마침표 없이). 제목 형식(Title Case) 권장, "
+    "고유명사·약어는 관용 표기를 따른다."
+)
+
+
+def translate_title_ko_en(text: str) -> str:
+    """한국어 연구개발과제명 → 영어 제목 한 줄. 실패·미가용 시 빈 문자열."""
+    t = (text or "").strip()
+    if not t:
+        return ""
+    try:
+        raw = _ask(_TRANSLATE_TITLE_SYSTEM, [{"role": "user", "content": t}], max_tokens=200)
+    except Exception:  # noqa: BLE001
+        return ""
+    line = _unwrap_fence(raw or "").strip().strip('"').strip("'")
+    return line.splitlines()[0].strip() if line else ""
 
 
 # ── 자체 테스트(__main__): 항상 스텁 모드로 실행 ─────────────────────────────

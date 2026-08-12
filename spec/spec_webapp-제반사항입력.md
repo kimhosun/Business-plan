@@ -1,0 +1,542 @@
+# spec: 제반사항 입력(프로젝트 공통) — RFP 업로드 아래 자유입력 + 전체 작성 참고
+
+RFP 업로드 아래에 **프로젝트 단위 자유입력 칸('제반사항')** 을 두고, 저장한 내용을 모든 절
+작성·변환의 **공통 참고·생성 근거**로 투입한다. RFP(파일 추출본)와 나란히 동작하되, 제반사항은
+사용자가 직접 확정한 정보라 **RFP와 상충하면 제반사항을 우선**한다. 관련:
+[RFP 자동작성/참조](spec_rfp-자동작성.md), [작성 프롬프트](spec_webapp-작성프롬프트.md).
+
+## ① 질의·요청 히스토리
+
+- **2026-08-11 (#82)** (원문) "연구개발비 사용 계획에서 **비목/직접비 나온 표는 참여기관 갯수만큼**
+  있어야 해. 그리고 **연구개발비 총액은 표지/요약문에 정의된 연차별 금액**으로 작성되어있어야해." +
+  문답: (A) 세부표 기관수 복제는 **8-1처럼 전용 버튼(2단계)** 으로(안전한 총액 채움은 저장/빌드 시
+  자동, 위험한 구조복제는 별도 버튼+롤백). (B) 연구개발비 총액 = **합계 E(정부+기관부담, 표지 합계열과
+  동일)**. → [후속19](#2026-08-11-후속19--8장-비목표-연구개발비-총액-채움--세부표-기관수-복제) 참조.
+- **2026-08-10** (원문 요지) "RFP 업로드 **아래에 추가로 입력하는 칸**을 만들고 싶다. 전체 작성할 때
+  참고할 내용이다. 칸 제목은 **'제반사항 입력'** 정도(문구 추천). 담을 내용:
+  1) 참여기관(주관/공동), 기관형태(비영리·대/중/소기업 등) 및 기관별 주요 담당 연구내용
+  2) 연구기간
+  3) 연구기관별·연구기간별 정부출연금
+  4) 주요 연구 목표/내용(RFP와 다르게 할 경우·전략이 있을 경우 대비용)."
+- **2026-08-10(후속)** (원문 요지) "작성된 내용들을 **모든 챕터에서 활용 가능하도록** 보완.
+  예: **연구내용은 1.1·1.2·2.1**, **참여기관은 2·3·5·7·8장**에서도 활용. 전반 내용 반영." →
+  제반사항은 이미 모든 절에 투입되고 있었으나, **어느 항목을 어느 절에 쓸지 안내(focus)** 가
+  없었음. 4항목→장/절 매핑(`_overview_focus`)을 추가해 절별로 관련 항목을 골라 반영하게 함.
+- **2026-08-10(후속2)** (원문 요지) "제반사항을 그냥 양식 없이 입력하는 게 아니라, **'참여기관'은
+  라벨로 고정되고 옆에 입력칸**이 나와야 한다." + 문답: **구조화 폼(표 포함)** 선택. → 단일
+  textarea 를 **구조화 폼**으로 교체(참여기관·정부출연금은 행 추가형, 연구기간·주요목표는 입력칸).
+- **2026-08-10(후속3)** (원문 요지) "제반사항 내용이 길어지면 **왼쪽 사이드바에 입력할 게 많아지니
+  따로 페이지로 구성**해달라. **참여기관을 입력하면 아래 정부출연금에 기관이 자동으로 채워지고**,
+  **연구기간을 연차별 연구기간으로 수정**해 채우면 **정부출연금에 연차가 자동으로 작성**되게." +
+  문답: 별도 페이지=**모달 오버레이**, 정부출연금=**매트릭스 그리드(행=기관 × 열=연차)** 선택.
+- **2026-08-11** (원문 요지) "① 제반사항에 **사업계획서 표지(표)** 를 입력할 수 있도록, ② 제반사항에
+  **요약문의 연구개발 목표 및 내용** 을 입력할 수 있도록 수정. (+ 3-3 편성도 표 채움은
+  [3-3 편성도](#2026-08-11-후속5--3-3-편성도-표-자동-채움) 참조)." + 문답: 표지·요약문 값은
+  **문서의 실제 표(표지 표·요약문 표) 셀에 빌드 시 직접 채움**(AI 참고용이 아니라 실 셀 오버레이).
+
+## ② 확정 사양
+
+- **성격**: 프로젝트당 1개의 **구조화 입력**(2026-08-10 후속2 로 자유텍스트→폼 전환). 라벨
+  **"📌 제반사항 입력"**, 부제 "전체 작성 공통 참고". RFP 와 별개 저장·별개 표시.
+- **폼 구조(구조화)**: 좌측 aside(300px)에 맞춘 컴팩트 폼.
+  - **참여기관**(행 추가형): 각 기관 = 카드 `{role(주관/공동, select), name(입력), type(비영리/대기업/
+    중견기업/중소기업/대학/출연연/기타, select), duty(주요 담당 연구내용, 입력)}`. `+ 기관`/행 삭제(×).
+  - **연구기간**: 한 줄 입력.
+  - **정부출연금**(행 추가형): 각 행 `{org(기관), year(연차), amount(금액)}`. `+ 행`/삭제(×).
+  - **주요 연구 목표/내용**: 여러 줄 textarea.
+- **저장(store)**: `data/projects/<pid>/overview.json`(구조화). 삭제 시 프로젝트 디렉터리째 정리.
+  - `write_overview_data(pid, data) -> dict`, `read_overview_data(pid) -> dict`(기본 빈 구조).
+  - `read_overview(pid) -> str`: **LLM 투입용 직렬화 텍스트**(`_overview_serialize`). overview.json
+    없으면 구버전 `overview.txt` 폴백. 직렬화 예: `[참여기관]\n- (주관) 한국선급 · 비영리 · 담당:
+    설계·해석·AIP\n[연구기간] …\n[연구기관별·연차별 정부출연금]\n- …\n[주요 연구 목표·내용]\n…`.
+- **REST**:
+  - `GET  /api/projects/{pid}/overview` → `{data, text, chars}` (data=구조화, text=직렬화)
+  - `PUT  /api/projects/{pid}/overview`  (body `{data}`) → `{data, text, chars}` (구버전 `{text}` 관대 수용)
+- **생성 근거 투입(핵심)**: ④ 변환(`convert_input`)·작성 채팅(`chat_write`)이 **제반사항을
+  컨텍스트로 받는다**. 프롬프트에 `[제반사항(과제 공통 정보)]` 블록(최대 `OVERVIEW_MAX_CHARS`
+  =8000자) 포함.
+  - 시스템 규칙: "제반사항이 있으면 **참여기관·기관형태·역할·연구기간·기관별 정부출연금·주요
+    연구목표를 확정 정보로 최우선 사용**하고, **RFP 와 상충하면 제반사항을 따른다**(항목 4의 전략).
+    제반사항·RFP·입력에 없는 수치는 지어내지 말고 [○○ 확인 필요]."
+  - 우선순위: **제반사항 > RFP > (문체/구성/작성요령은 형식 규칙으로 항상 준수)**.
+- **절별 활용 매핑(focus, 2026-08-10 후속)**: 제반사항 4항목을 절/장에 매핑해, 각 절 프롬프트의
+  [제반사항] 블록 끝에 "※ 이 절에 반영: …" 안내를 붙인다. 모델은 이 절과 무관한 항목은 넣지 않는다.
+  - 매핑(`_OVERVIEW_ASPECTS`): 주요 연구목표·내용 → **1·2·4장** + 5-1·5-5; 참여기관·기관형태·역할·
+    담당연구내용 → **2·3·5·7·8장** + 1-3·6-1·6-2; 연구기간 → **3·7·8장** + 2-3; 기관별·연차별
+    정부출연금 → **8장** + 5-4·3-4. (사용자 지정 예시를 그대로 반영·확장.)
+  - `GET /nodes/{nid}` 응답에 `overview_focus`(그 절 안내문)를 실어 ② 미러 상단에 표기.
+- **표시(프론트)**:
+  - 좌측 aside, **RFP 업로드 박스 바로 아래**에 구조화 폼 + [저장] 버튼 + 상태줄. 프로젝트 열 때
+    `renderOverviewForm(data)`, [저장]/필드 focusout/행 삭제 시 `collectOverviewData()`→PUT(자동저장).
+    프로젝트 없으면 골격(빈 행)만 표시·저장 비활성.
+  - 우측 **② 작성 프롬프트 패널**의 RFP 참조(`#rfp-ref`) 아래에 읽기전용 미러(`#overview-ref`,
+    직렬화 text)로 표기(절 열 때 `renderOverviewRef()`). 내용 없으면 숨김.
+- **레이스/내성**: 로드·저장 실패해도 노드/트리 로드에는 영향 없음(try/catch). 저장은 현재 pid
+  기준. 옛 서버(라우트 없음: 405/404)면 상태줄에 "서버 재시작 필요" 힌트.
+
+## ③ 구현 상태 (완료 2026-08-10)
+
+- [x] `backend/store.py`: `_overview_path`·`write_overview`·`read_overview`(프로젝트 루트 `overview.txt`).
+- [x] `backend/schemas.py`: `OverviewBody{text}`.
+- [x] `backend/main.py`: `GET/PUT /api/projects/{pid}/overview`(2개 라우트 등록 확인). `chat_node`
+  context 에 `overview=store.read_overview(pid)`, `convert_node`→`convert_input(...,overview_text=)`.
+- [x] `backend/claude_service.py`: `_OVERVIEW_MAX`(8000)·`_overview_block()` 추가. `_CONVERT_SYSTEM`
+  규칙 1(제반사항 최우선·상충 시 우선)/4(수치 자리표시) 개정, `_claude_convert_input`·`convert_input`
+  에 `overview_text` + user 프롬프트 `[제반사항]` 블록. `_CHAT_SYSTEM` 규칙 1-0 추가,
+  `_chat_context_block` 에 `[제반사항]` 블록.
+- [x] `frontend/index.html`: RFP 박스 아래 `.overview-box`(#overview-input textarea + [저장] +
+  #overview-status), ② 패널 RFP 참조 아래 `#overview-ref`(읽기전용 미러).
+- [x] `frontend/app.js`: `state.overview`, `API.getOverview/saveOverview`(PUT=jsonBody), `refreshOverview()`
+  (openProject 에서 호출), `renderOverviewRef()`(showNode 에서 호출), `saveOverview()`(버튼+blur 자동저장,
+  옛서버 404/405 힌트), 프로젝트 삭제 시 초기화, 리스너 2개.
+- [x] `frontend/styles.css`: `.overview-box/.overview-head/.overview-title/.btn-mini/.overview-input/
+  .overview-status`, `#overview-ref-text` 를 rfp-ref-text 스타일에 합류.
+- [x] 검증: 백엔드 라우트 2개 등록·store 왕복 OK, `_overview_block` 렌더 OK, `claude_service._selftest`
+  PASS. 프론트(headless chromium): 새 요소 존재·RFP 박스 바로 아래 배치·플레이스홀더 4항목·페이지
+  오류 0·비네트워크 콘솔오류 0, 예시 입력 시각 확인(스크린샷).
+- 참고: **서버 재시작 필요** — 실행 중 uvicorn 이 옛 코드면 라우트가 없어 저장 시 404/405(프론트가
+  재시작 힌트 표시). [그림삽입 후속2](spec_hwpx-그림삽입.md) 의 `--reload` 미적용 이슈와 동일 맥락.
+
+### 2026-08-10 후속 — 절별 활용 매핑(focus) 추가
+- [x] `backend/claude_service.py`: `_OVERVIEW_ASPECTS`(4항목→장/절)·`_chapter_of`·`_overview_focus`·
+  공개 `overview_focus` 추가. `_overview_block(overview, nid)` 가 focus 안내를 블록 끝에 덧붙임.
+  `_claude_convert_input`(nid 전달)·`_chat_context_block`(context nid) 반영. `_CONVERT_SYSTEM` 규칙 1·
+  `_CHAT_SYSTEM` 규칙 1-0 을 "관련 항목만 선별, 무관 항목 제외"로 개정.
+- [x] `backend/main.py`: `get_node` 응답에 `overview_focus=claude_service.overview_focus(nid)` 추가.
+- [x] `frontend/index.html`·`app.js`·`styles.css`: ② 미러에 `#overview-ref-focus` 안내 박스 추가,
+  `renderOverviewRef()` 가 `state.node.overview_focus` 로 채움.
+- [x] 검증: 절별 매핑 단위확인(1-1/1-2/4-1=연구내용, 2-1~2-3=연구내용+참여기관(+기간),
+  3-1/3-4=참여기관+기간(+출연금), 5-1=연구내용+참여기관, 5-4/8-x=참여기관+기간+출연금, 6-1=참여기관).
+  프론트 headless: 미러·focus 박스 렌더, 페이지오류 0. `_selftest` PASS.
+
+### 2026-08-10 후속2 — 자유텍스트 → 구조화 폼(표 포함)
+- [x] `backend/store.py`: `overview.json` 저장으로 전환. `_overview_serialize`(구조화→LLM 텍스트),
+  `read_overview_data`/`write_overview_data`, `read_overview`(json 직렬화, 없으면 txt 폴백).
+- [x] `backend/schemas.py`: `OverviewBody{data, text?}`. `backend/main.py`: GET→`{data,text,chars}`,
+  PUT→`write_overview_data`. (convert/chat 는 `read_overview` 텍스트를 그대로 받아 변경 없음.)
+- [x] `frontend/index.html`: `.overview-box` 를 구조화 폼으로 교체(참여기관 `#inst-list`+`+기관`,
+  연구기간 `#ov-period`, 정부출연금 `#fund-list`+`+행`, 목표 `#ov-goal`).
+- [x] `frontend/app.js`: `ovMakeInst`/`ovMakeFund`(행 생성), `renderOverviewForm`/`collectOverviewData`,
+  `refreshOverview`/`saveOverview`(구조화), `state.overviewData`, 리스너(추가·삭제 위임·focusout
+  자동저장), boot 에서 빈 폼 렌더.
+- [x] `frontend/styles.css`: `.ov-field/.ov-label/.ov-list/.ov-card/.ov-card-row/.ov-input/.ov-frow/
+  .ov-narrow/.ov-del/.btn-mini2` (300px 폭 대응 컴팩트).
+- [x] 검증: 폼 렌더/행추가/collect(빈 행 제외)/삭제 chromium OK·페이지오류 0, 300px 시각 확인.
+  실서버 라이브: 구조화 PUT(기관2·출연금2)→GET data 복원·직렬화 text(203자)·node overview_focus 정상.
+  테스트 데이터는 저장 후 다시 비움.
+
+### 2026-08-10 후속3 — 별도 모달 페이지 + 정부출연금 자동 생성(참여기관×연차 그리드)
+
+확정 사양(위 후속2 를 다음으로 개정·확장):
+
+- **별도 페이지(모달)**: 좌측 aside 의 `.overview-box` 는 **제목 + [편집] 버튼 + 요약줄(참여기관 N ·
+  연차 N · 저장상태)** 만 남긴다. [편집] 클릭 시 화면 중앙에 **모달 오버레이**(`#overview-modal`)로
+  전체 폼(참여기관·연차별 연구기간·정부출연금 그리드·주요목표)을 연다. 배경 클릭·×·ESC·[닫기]로 닫고,
+  [저장]과 모달 내 필드 focusout 자동저장은 후속2 와 동일.
+- **연차별 연구기간**(단일 `period` → 배열 `periods`): 행 추가형, 각 행 `{year(연차 라벨, 기본
+  "N차년도" 자동·편집가능), range(기간, 예 "2026.10~2027.09")}`. `+ 연차`/삭제(×). 하위호환:
+  `period`(문자열)은 유지하되 `periods` 있으면 파생값으로 채운다(직렬화·읽기 폴백용).
+- **정부출연금 = 매트릭스 그리드**(자동 생성): **행 = 참여기관(name 있는 것) × 열 = 연차(year 라벨
+  있는 것)**, 셀 = 금액(사용자 입력). 참여기관/연차를 바꾸면 그리드가 자동 재구성되고 **기존 셀 금액은
+  (기관,연차) 키로 보존**한다. 행 합계·열 합계·총계 자동 계산(천단위 콤마 표시, 저장은 숫자문자열).
+  참여기관 또는 연차가 비면 안내문 표기(그리드 숨김).
+- **저장 데이터 호환**: `funding` 은 기존과 동일한 **평면 리스트 `[{org,year,amount}]`** 로 저장
+  (그리드 셀 중 금액이 있는 것만). 백엔드 `_overview_serialize` 의 정부출연금 직렬화는 변경 없음.
+  `periods` 는 `_OVERVIEW_DEFAULT`·직렬화에 추가(있으면 `[연차별 연구기간]` 블록, 없으면 `[연구기간]`).
+
+## ③ 구현 상태 — 2026-08-10 후속3 (완료)
+
+- [x] `backend/store.py`: `_OVERVIEW_DEFAULT` 에 `periods: []` 추가. `_overview_serialize` 가
+  `periods` 있으면 `[연차별 연구기간]` 블록(연차: 기간), 없으면 기존 `[연구기간]` 폴백. `write_overview_data`
+  필터가 `periods` 보존(오프라인 검증: 직렬화·필터 통과).
+- [x] `backend/schemas.py`: `OverviewBody` 도크스트링에 `periods:[{year,range}]` 반영(스키마는 관대 dict).
+- [x] `frontend/index.html`: 사이드바 `.overview-box` 를 제목+[편집]+`#overview-summary`+상태줄로 축소.
+  본문 끝에 `#overview-modal`(오버레이) 추가 — 참여기관(`#inst-list`)·연차별 연구기간(`#period-list`,
+  `+연차`)·정부출연금 그리드(`#fund-grid-wrap`)·주요목표(`#ov-goal`)·[닫기]/[저장]/상태. 캐시버스트 `v=20260810e`.
+- [x] `frontend/app.js`: `ovMakePeriod`, 정부출연금 그리드(`renderFundingGrid`/`ovRebuildGrid`/
+  `ovRecalcTotals`/`ovReadGridIntoMap`/`ovFundMap`/`ovFundKey`/`ovNumOnly`/`ovFmt`/`ovCurrentInstNames`/
+  `ovCurrentPeriodYears`), `renderOverviewForm`/`collectOverviewData` 개편(periods·그리드→평면 funding·
+  파생 period), `renderOverviewSummary`, `openOverviewModal`/`closeOverviewModal`(저장 후 닫기), 리스너
+  (열기/닫기/ESC/배경클릭, `+연차`, 삭제 위임→그리드 재구성, 금액셀 input=합계·focusout=콤마+저장,
+  이름/연차 change=그리드 재구성), boot·프로젝트 리셋에서 요약·모달 초기화.
+- [x] `frontend/styles.css`: `.overview-summary`, `.ov-prow`/`.ov-narrow2`, 모달(`.modal-overlay`/`.modal-card`/
+  `.modal-head`/`.modal-title`/`.modal-sub`/`.modal-x`/`.modal-body`/`.modal-foot`/`body.modal-open`),
+  정부출연금 그리드(`.fund-grid*`/`.fund-grid-empty`).
+- [x] 검증: store 직렬화(periods/legacy)·write 필터 오프라인 OK. 실서버(uvicorn `--reload`) GET 200·
+  기존 데이터 무손실 확인(사용자 실데이터는 미변경). app.js 브레이스 밸런스 = 알려진 정상 HEAD 와 동일
+  델타(스트리퍼 artifact), 신규 심볼 전원 정의·널바이트 0. (headless 브라우저 미설치로 시각확인은 사용자 몫.)
+
+### 2026-08-11 후속4 — 표지·요약문 입력 + 문서 표 자동 채움(doc_fill)
+
+확정 사양:
+
+- **제반사항 데이터 확장**(`overview.json`): 기존(institutions·periods·funding·goal)에 추가
+  - `cover`: `{title_ko,title_en,leader_name,leader_title,leader_tel,leader_mobile,leader_email,
+    biz_no,corp_no,address}` — 사업계획서 표지의 **추가 입력 항목**(기관명·연구기간·정부지원비는
+    institutions·periods·funding 에서 자동 파생).
+  - `summary`: `{goal_final, goals:[{year,text}], contents:[{year,text}]}` — 요약문 연구개발
+    목표(최종+연차별)·연차별 개발내용. 연차 라벨은 periods 를 따른다.
+- **모달 UI 추가**: 정부출연금 아래에 **사업계획서 표지**(2열 필드 그리드) + **요약문·연구개발 목표
+  및 내용**(최종목표 textarea + 연차별 목표/개발내용 블록, periods 변경 시 자동 재구성) 섹션.
+  정부출연금 단위 라벨을 **천원**으로(표지 정부지원비와 일치). 사이드바 요약줄에 `표지 ✓·요약목표 ✓` 추가.
+- **문서 표 자동 채움**(`backend/doc_fill.py`): **빌드 직전**(`build`·`section.hwpx` 둘 다 restore
+  직전) `doc_fill.apply(pid)` 가 제반사항으로 아래 3개 표 셀을 채운다(빈 값은 건너뜀=템플릿 보존).
+  표는 **셀 텍스트 시그니처로 탐색**(좌표 하드코딩 회피), 표 안은 KEIT 표준 서식 (row,col) 매핑.
+  기록은 `tables._spread`+`pipeline.merge_result_into_yaml`(→cell_para) 경로라 빌드 시 표 셀로 출력.
+  - **표지 표**(시그니처 "연구개발과제명"+"주관연구개발기관"+"사업자등록번호"): 과제명(국/영)·주관기관명·
+    유형·사업자/법인번호·주소·총괄책임자(성명/직위/전화/휴대/이메일)·전체 및 연차별 연구개발기간·
+    공동연구개발기관(기관명·**역할(공동)**·유형)·**연구개발비 표 전체**.
+    - 연구개발비(r31~r36): 정부출연금 합=정부지원현금(c4), 총현금(c19)·합계(c27)=정부지원(부담·현물
+      자료 없어 동일), 기관부담·그외·현물 열(c5/c7/c13/c16/c23)은 **비움**, 합계행(r36)까지.
+      **템플릿 예시행(r31)의 placeholder('0,000,000')는 `_clear` 로 제거**(안 그러면 연구비가
+      가짜 0 으로 남아 '누락'처럼 보임 — 2026-08-11 후속6 대응). merge 는 path 중복 시 **마지막이
+      승리**하므로 clear 를 먼저, put 을 뒤에 넣어 값이 남게 한다.
+  - **요약문 표**(시그니처 "연구개발 목표"+"국문핵심어"): 목표 셀=[최종목표]+연차별 목표, 내용 셀=연차별
+    개발내용(‘ㅇ …’ 개조식, 셀 문단 수만큼 줄 분배).
+  - **3-3 편성도 표** → 후속5.
+- **LLM 반영**: `_overview_serialize` 에 `[사업계획서 표지]`·`[요약문 연구개발 목표 및 내용]` 블록 추가
+  (표 채움과 별개로 AI 작성 컨텍스트에도 투입).
+- **멱등성**: 빌드마다 source→restore 새로 하고 doc_fill 은 매번 제반사항 기준으로 덮어씀(누적 없음).
+
+구현 상태(완료 2026-08-11):
+- [x] `backend/store.py`: `_OVERVIEW_DEFAULT` 에 `cover`·`summary` 추가, `_overview_serialize` 블록 2종.
+- [x] `backend/doc_fill.py`(신규): `_find_table`·`_cellmap`·`_put`·`_fill_cover/_summary/_team`·`apply`·`preview`.
+- [x] `backend/main.py`: `build`·`section.hwpx` 에 `doc_fill.apply(pid)` 삽입(restore 직전), import 추가.
+- [x] `frontend/index.html`: 모달에 표지·요약문 섹션, 정부출연금 단위 천원, 캐시버스트 v=20260811a.
+- [x] `frontend/app.js`: `OV_COVER_FIELDS`·요약 맵(`ovSumGoal/ovSumContent`)·`renderSummaryYears`/
+  `ovRebuildSummary`, `renderOverviewForm`/`collectOverviewData` 확장, periods 변경/추가/삭제 시 요약칸
+  재구성, 사이드바 요약 갱신.
+- [x] `frontend/styles.css`: `.ov-cover-grid/.ov-cover-f/.ov-cover-wide/.ovm-sub-label/.ov-sumrow*`.
+- [x] 검증: doc_fill.preview(f44ab9f7, 합성 ov) 47 edits 좌표 정확, apply(프로젝트 사본) 3표·33셀 yaml
+  병합 확인 후 사본 삭제. 실서버(--reload) 정상 재기동·GET/보안 200. app.js 브레이스=정상 HEAD 델타.
+  실데이터(f44ab9f7) 미변경.
+
+### 2026-08-11 후속5 — 3-3 편성도 표 자동 채움
+
+- **질의**(2026-08-11): "3-3 기술개발팀 편성도에 **작성 내용이 표에 삽입이 안 됨**. 수정." + 문답:
+  **기존 편성도 표 셀에 채움** 선택. 원인: ④변환은 `body_paths()`로 **본문 문단에만** 쓰고 표 셀·표를
+  품은 문단은 제외 → 3-3처럼 '표가 곧 내용'인 절은 생성 내용이 표(편성도)에 못 들어가고 주변 빈 문단에만 감.
+- **확정 사양**: doc_fill 이 **제반사항 참여기관**으로 3-3 편성도 표(s2/p340/t0, 시그니처
+  "주관연구개발기관명"+"담당기술내용"+"참 여 연 구 원")를 채운다.
+  - 주관기관: 기관명→(r0,c2), 담당기술내용(주관 duty)→(r1,c6).
+  - 공동기관(최대 3블록, 열 0·3·6): 기관명+연구개발기간→(r5,c*), 담당 기술개발 내용(공동 duty)→(r12,c*).
+- **구현**: `doc_fill._fill_team`(위 후속4 구현에 포함). 검증: apply 사본 테스트에서 주관명 '한국선급'→r0c2,
+  공동 '케이베츠'→r5c0 확인.
+
+### 2026-08-11 후속6 — 표지 연구비·참여기관 '누락' 정정
+
+- **질의**(2026-08-11): "사업계획서 표지에 **연차별 연구비·참여기관 등이 누락**된 것 같다. 중복이라서
+  놔뒀으면 사업계획서 양식으로 바꿔줘."
+- **원인 진단**: (1) 사용자의 직전 빌드는 doc_fill 배선 이전이라 표지에 미반영(yaml r31 c4 여전히
+  '0,000,000'). (2) 초기 doc_fill 은 정부지원현금(c4) **한 열만** 채우고 총/합계 열·예시행
+  placeholder 를 안 건드려, 재빌드해도 연구비가 반쪽/가짜 0 으로 보임. 공동기관도 반영 안 된 빌드.
+- **조치**: `_fill_cover` 연구비 표를 **완성형**으로(위 후속4 개정): 정부지원=현금/총현금/합계 3열 채움 +
+  기관부담·그외·현물 열 비움 + r31 placeholder 제거 + 합계행. 공동기관 **역할(공동)** 추가. `_clear` 헬퍼 신설.
+- **검증**: preview(f44ab9f7 실데이터) 표지 52 edits(연차별 170/270/280·합계 720, 주관 한국선급·공동
+  케이베츠/고려대·역할·유형·기간), apply 사본에서 r31 c4='170'(placeholder 제거)·c5=''·합계 720 확인.
+- **후속 유의**: doc_fill 은 **빌드 시** 반영 → 사용자는 [빌드]를 다시 눌러야 표지가 채워진다.
+- **단위 확인 필요**: 표지 연구개발비 단위는 **천원**(공식 서식). 제반사항 정부출연금 그리드도 천원으로
+  1:1 반영하므로, 억 단위 과제면 천원 값(예 7.2억=720,000)으로 입력해야 한다(50·80 등은 백만원 오입력 의심).
+
+### 2026-08-11 후속7 — 표지 전체 항목 입력 + HWP 표지 완전 연결
+
+- **질의**(2026-08-11, 이미지 2장): 웹 제반사항 내용을 **사업계획서 표지(공식 서식)로 입력 가능하게**
+  하고, "나중에 표지로 바로 나오도록 **한글파일에 연결**"해달라. 표지 서식의 모든 칸을 대상으로.
+- **확정 사양**(기존 표지 채움을 표지 서식 전 항목으로 확장):
+  - **참여기관 카드에 책임자 정보** 추가: 성명·직위·휴대전화·전자우편.
+    (institution: `lead_name/lead_title/lead_mobile/lead_email`. 최초 6칸에서 **직장전화·국가연구자번호는
+    2026-08-11 삭제** — 공동기관 표에 없고 카드가 번잡해 제거. 표지 연구책임자 직장전화/국가연구자번호는
+    현재 미채움.)
+    - **주관기관 책임자 = 표지 연구책임자**(r17~r19: 성명 c13·직위 c26·직장전화 c13·휴대전화 c26·
+      전자우편 c13·국가연구자번호 c26).
+    - **공동기관 책임자 = 표지 공동연구개발기관**(r39~: 책임자 c10·직위 c13·휴대전화 c16·전자우편 c21).
+  - **표지 섹션 재구성**: ① 과제명(국/영)·주관기관 문서정보(사업자/법인번호·주소), ② **실무책임자**
+    (`pm_name/pm_title/pm_tel/pm_mobile/pm_email/pm_researcher_no` → r45~r47). 구 `cover.leader_*`
+    (총괄책임자 단일칸)은 **제거**(연구책임자는 이제 주관 카드에서).
+  - **doc_fill 매핑 확장**(`_fill_cover`): 위 주관·공동 책임자·실무책임자 셀 추가. 표지 서식의
+    입력 가능한 칸이 제반사항으로 대부분 채워짐(기관부담·현물 연구비, 소분류·보안등급 등은 범위 밖).
+  - **직렬화**: 참여기관 블록에 `책임자: 성명(직위)` 추가, cover 라벨을 실무책임자 중심으로 갱신.
+- **구현/검증**(완료 2026-08-11):
+  - [x] `app.js`: `ovMakeInst` 책임자 6칸 + collect(institution lead_*), `OV_COVER_FIELDS`(실무책임자로 교체).
+  - [x] `index.html`: 표지 섹션 3구획(과제명·주관문서정보 / 실무책임자), 구 연구책임자칸 삭제, v=20260811b.
+  - [x] `doc_fill.py`: 주관/공동 책임자 + 실무책임자 셀 매핑, `styles.css` `.ov-inst-lead*`.
+  - [x] `store.py`: institution 책임자·cover 실무책임자 직렬화.
+  - [x] 검증: preview(합성 ov) 58 edits — 과제명/주관기관/연구책임자 6/공동 책임자 4+역할+유형/실무책임자 6
+    전 항목 정확 매핑. py_compile·JS 밸런스·서버 재기동 OK.
+  - 유의: doc_fill 은 **빌드 시** 반영(=[빌드] 다시 눌러야 표지 완성).
+
+### 2026-08-11 후속8 — '제반사항' 폐지 → '표지/요약문 입력'으로 개편
+
+- **질의**(2026-08-11): "제반사항 입력을 **아예 삭제**하고, **표지/요약문 입력**으로 해서 표지와 요약문을
+  입력하게 만들어줘."
+- **확정 사양**: 이 기능의 **사용자 표기를 '제반사항' → '표지/요약문 입력'** 으로 전면 교체. 데이터
+  저장소(`overview.json`)·REST·doc_fill·AI 컨텍스트 주입 등 **백엔드는 그대로 유지**(내부 명칭만 overview).
+  - 모달: 제목 "📌 표지 · 요약문 입력", 본문을 **Ⅰ. 표지 입력**(참여기관·연차별 연구기간·정부출연금·
+    과제명/주관기관 문서정보·실무책임자) / **Ⅱ. 요약문 입력**(최종목표·연차별 목표/개발내용) 2구획으로.
+  - **'주요 연구 목표/내용(AI 작성 참고)' 필드 삭제**(순수 제반사항 잔재). `collectOverviewData` 는
+    `goal: ""` 로 보냄(모델 키는 하위호환 유지, 빈 값이라 직렬화·doc_fill 무영향).
+  - 사이드바 박스 "📌 표지/요약문 입력" + 요약줄("표지 ✓·요약문 ✓"), ② 프롬프트 미러 라벨도 동일 교체.
+  - 부제/툴팁: "빌드 시 문서의 사업계획서 표지·요약문 표에 자동으로 채워집니다(각 절 작성에도 참고)".
+- **구현/검증**(완료 2026-08-11):
+  - [x] `index.html`: 사이드바·모달·② 미러의 '제반사항' 표기 전부 교체, 그룹 헤더 2개(`ovm-group-title`),
+    `#ov-goal` 섹션 삭제, v=20260811c.
+  - [x] `app.js`: `#ov-goal` 참조 제거(render/collect), 요약줄·토스트·상태문구 '표지/요약문'화. (남은
+    '제반사항'은 내부 주석뿐, 사용자 비노출.)
+  - [x] `styles.css`: `.ovm-group-title`. 백엔드 무변경.
+  - [x] 검증: 사용자 노출 '제반사항' 0건(index.html), ov-goal 참조 0, JS 밸런스=정상 HEAD 델타.
+
+### 2026-08-11 후속9 — 표지 입력을 공식 서식 전 항목으로 전면 재작성
+
+- **질의**(2026-08-11, 표지 서식 이미지): "표지 내용을 이 양식에 맞춰 **처음부터 다시** 만들어줘."
+- **확정 사양**: 표지 입력을 KEIT 표준 표지 서식의 **입력 가능한 전 항목**으로 확장.
+  - **선택(체크박스) 항목** — select 입력 → 문서 셀 텍스트 **재작성**(체크 위치에 √):
+    과제유형(일반형/통합형/병렬형 r0c5·r0c9·r1c9), 신청구분(신청용/협약용/차단계 r0c17),
+    보안등급(일반/보안 r1c24), 선정방식(정책지정/지정공모/품목지정/자유공모 r7c5).
+  - **상단 텍스트 항목**: 중앙행정기관명(r2c5)·전문기관명(r4c5)·세부사업명(r2c22)·내역사업명(r3c22)·
+    공고번호(r5c5)·총괄과제번호(r5c22)·연구개발과제번호(r6c22)·산업기술분류 1~3순위 명칭+비율
+    (r8 c5/c11/c14/c20/c22/c29)·국가과학기술분류(r9 동일)·총괄과제명 국/영(r10c10·r11c10).
+  - 기존 연결(과제명·주관기관·연구책임자·기간·정부지원비·공동기관·실무책임자) 유지.
+- **구현**(`doc_fill._fill_cover`): `_set_paras`(셀 문단 단위 정확 덮어쓰기)·`_CHK/_UNC` 추가, 위 매핑 전부.
+  프런트: `index.html` 표지 섹션을 문서구분/사업정보/과제명/기술분류/주관기관/실무책임자 6구획으로 재작성
+  (select 4개 + input 다수), `app.js` `OV_COVER_FIELDS` 37개로 확장(select 도 .value 공통 처리),
+  `styles.css` `.ov-class-grid/.ov-class-head`·`select.ov-input`. `store.py` cover 직렬화 라벨 확장.
+- **검증**: preview/apply(사본) — 체크박스 4종 √ 위치 정확(예 "일반[√] 보안[  ]", "지정공모[√]"),
+  상단 텍스트·분류·총괄과제명 전부 정위치, apply 70셀 병합. py_compile·JS밸런스·37 ID·서버 200 OK. v=20260811d.
+- **범위 밖(후속)**: 연구개발비 기관부담·현물(제반사항 정부출연금=정부지원만), 사업명(그룹 라벨),
+  당해연도 개발기간(r27), 단계 n단계 기간(r25·r26). 필요 시 추가.
+
+### 2026-08-11 후속10 — 표지 RFP 자동채움 + 기술분류 AI 제안
+
+- **질의**(2026-08-11): "① 중앙행정기관·전문기관·세부/내역사업명·공고번호는 **RFP 참조**해 작성,
+  ② 산업기술분류·국가과학기술분류는 **관련 규정 찾아 스스로 작성**할 수 있게 보완."
+- **확정 사양**:
+  - **RFP 자동채움**(버튼 '사업 정보 › RFP에서 채우기'): `POST /cover/autofill-rfp` →
+    `claude_service.cover_autofill_rfp(rfp_text)` 가 업로드된 RFP 원문에서 표지 항목을 JSON 추출
+    (명시된 값만, 추측 금지). RFP 미업로드면 400. 프런트가 해당 입력칸 채우고 자동저장.
+    - **추출 키(2026-08-11 확장)**: `gov_dept, agency, sub_biz, detail_biz, notice_no, title_ko,
+      task_no, ind_class1, ind_class2`. 공고문뿐 아니라 **품목 공고표**(과제명·관리번호·산업기술분류만
+      있는 형식)도 커버하도록 과제명·관리번호(→공고번호)·산업기술분류까지 추출. (당초 5키만으로는
+      품목표에서 빈 결과 → '반응 없음'으로 보였던 문제 해결.)
+  - **기술분류 AI 제안**(버튼 '기술분류 › AI 분류 제안'): `POST /cover/classify` →
+    `claude_service.cover_classify(context)` 가 과제명·총괄과제명·요약목표·직렬화 제반사항(+RFP 요지)로
+    산업기술분류표·국가과학기술표준분류표의 소분류 1~3순위 명칭+비율(`ind_*`,`nat_*` 12키)을 제안.
+    - **웹 조사 미사용(2026-08-11 정정)**: 초기엔 WebSearch/WebFetch 를 붙였으나 **CLI 웹조사가
+      600초(=_research_timeout)까지 hang → 엔드포인트 무응답 + uvicorn --reload 가 "background task 대기"
+      로 멈춤**('반응 없음'의 실제 원인). 로컬 분류표 데이터가 없어, **모델이 학습한 두 공식 분류표 지식**으로
+      제안하도록 프롬프트를 강화(대·중·소분류 체계 설명, RFP 명시 산업분류를 1순위 존중, 표준명칭만·창작금지).
+      결과 ~7초 응답(37580ff5 실측 12필드). 프롬프트가 표를 '참고'하는 셈(오프라인 표 파일 제공 시 정밀도↑).
+  - 공용: `_parse_json_obj`(펜스/느슨한 {} 파싱). 프런트 `ovSetCoverFields`(cover키→입력칸)로 채운 뒤
+    `saveOverview`. 버튼 비활성/상태문구(분류는 수십 초). `api()` 는 클라이언트 타임아웃 없어 장시간 조사 허용.
+- **구현/검증**(완료 2026-08-11):
+  - [x] `claude_service.py`: `_parse_json_obj`·`cover_autofill_rfp`·`cover_classify`(+시스템프롬프트·키셋).
+  - [x] `main.py`: `POST /cover/autofill-rfp`·`/cover/classify`(스레드풀 sync). `app.js`: API 2개·핸들러
+    2개·`ovSetCoverFields`·리스너, `index.html` 버튼 2개(v=20260811f).
+  - [x] 검증: py_compile·JS밸런스(델타 유지)·라우트 2개 등록·파서 단위확인. (실제 LLM 호출은 사용자 환경
+    API키/CLI 로 동작 — 오프라인 스텁은 {} 폴백.)
+- **유의**: 추출·분류는 **제안**이며 사용자가 검토·수정한다. RFP 관련: [RFP 자동작성](spec_rfp-자동작성.md).
+
+#### 2026-08-11 후속10-b — RFP 업로드 시 표지 자동채움(버튼 불필요)
+- **질의**: "RFP 에 포함된 내용은 사업계획서 표지에 **자동으로** 나오도록 보완."
+- **사양**: `POST /rfp`(업로드) 성공 후 `_autofill_cover_from_rfp(pid, text)` 가 `cover_autofill_rfp` 로
+  추출한 항목을 overview.cover 의 **빈 칸에만** 병합·저장(사용자 입력 미덮음). 응답에 `cover_filled`(채운 키)
+  포함. 프런트 `onRfpSelected` 가 채워졌으면 `refreshOverview()` + 토스트. LLM 미가용·실패는 조용히 건너뜀
+  (업로드는 성공 유지). '사업 정보 › RFP에서 채우기' 버튼은 **재실행/덮어쓰기용**으로 유지.
+- 한계: 이미 업로드된(과거) RFP 는 소급 자동채움 안 됨 → 버튼으로 실행하거나 재업로드. 빌드 시 doc_fill 이
+  overview.cover(=자동채움분)를 표지 셀에 반영.
+- [x] `main.py` upload_rfp + `_autofill_cover_from_rfp`, `app.js` onRfpSelected refresh, v=20260811g.
+  검증: py_compile·JS밸런스·서버 200.
+
+### 2026-08-11 후속11 — 과제명 국문 입력 시 영문 자동 번역
+
+- **질의**: "총괄과제명 영문·과제명 영문은 국문을 작성하면 자동 영문으로 채워지게."
+- **사양**: `POST /cover/translate`(body `{text}`) → `claude_service.translate_title_ko_en` 가 한국어
+  과제명을 공식 제안서용 영어 제목 한 줄로 번역. 프런트: 모달 focusout 에서 `#cov-master-title-ko`·
+  `#cov-title-ko` 이탈 시, **영문칸이 비어 있을 때만** 번역해 채우고 자동저장(`maybeTranslateTitle`,
+  중복호출 가드 `ovTranslating`). 사용자가 영문을 직접 넣었으면 덮지 않음. 영문칸 placeholder "국문 입력 시
+  자동 번역".
+- [x] `claude_service.py` `_TRANSLATE_TITLE_SYSTEM`·`translate_title_ko_en`, `main.py` 엔드포인트,
+  `app.js` API·`maybeTranslateTitle`·focusout 훅, `index.html` placeholder(v=20260811i).
+  검증: 엔드포인트 실측 4.4초 "Development of a Physical AI-Based Integrated Intelligent Navigation
+  Agent System". py_compile·JS밸런스·서버 200.
+
+### 2026-08-11 후속12 — 요약문 목표·내용 AI 우선 제안
+
+- **질의**: "연구개발 목표 및 내용에서 **최종목표·연차별 목표(·개발내용)도 AI로 우선 제안**해 작성하고,
+  사용자가 수정할 수 있게."
+- **사양**: `POST /summary/suggest` → `claude_service.summary_suggest(context, years)` 가 과제명·
+  총괄과제명·직렬화 제반사항(+RFP)로 `{goal_final, goals:[{year,text}], contents:[{year,text}]}` 제안.
+  연차 라벨은 periods 를 그대로 전달·사용. 프런트 버튼 '연구개발 목표 및 내용 › AI 제안' →
+  `summarySuggestAi`: 최종목표·연차별 목표·개발내용을 **빈 칸에만** 채우고(현재 연차만 매칭) 자동저장.
+  사용자가 이미 쓴 칸은 보존. 개조식·근거없는 수치는 '[○○ 확인 필요]'.
+- [x] `claude_service.py` `_SUMMARY_SUGGEST_SYSTEM`·`summary_suggest`, `main.py` `suggest_summary`,
+  `app.js` API·`summarySuggestAi`·리스너, `index.html` 버튼(v=20260811j).
+  검증: 엔드포인트 실측(37580ff5) goal_final+연차별 목표 3·개발내용 4 반환. py_compile·JS밸런스·서버 200.
+
+### 2026-08-11 후속13 — 연구비 매칭비율(현금/현물) 산정 + 표지 연구비 표 완성
+
+- **질의**: "표지의 참여기관·기업유형·연구비·연구기간으로 **8장 업데이트**, 정부출연금 대비 영리기업
+  (대/중견/중소) **매칭비율을 고려해 현금·현물까지** 작성 가능하게."
+- **매칭 산정**(`doc_fill._funding_breakdown`): 정부출연금=정부지원현금 A. 영리기업은 총 E=A/정부지원율,
+  기관부담 D=E−A, 현금 B=D×현금율, 현물 C=D−B. 비영리·대학·출연연·기타는 부담 0(전액 정부지원).
+  - 기본 비율(조정 가능, KEIT 산업기술 통상): 정부지원율 `_GOV_RATIO`={대기업 50%, 중견 70%, 중소 80%},
+    기관부담 현금율 `_CASH_RATIO`={대기업 15%, 중견 13%, 중소 10%}. (문서 예시행 '중소 80%·현금 10%·
+    현물 90%' 와 일치.)
+- **표지 연구비 표(r31~r36) 완성 채움**: 연차별로 기관 브레이크다운을 합산해 정부지원현금(c4)·기관부담
+  현금(c5)·현물(c7)·총현금(c19)·총현물(c23)·합계(c27) + 합계행 채움(그외 c13/c16 비움, 예시 placeholder 제거).
+  검증(f44ab9f7 실데이터): 중소 80→B2/C18, 대기업 50→B8/C42, 비영리 100→부담0; 1차 합계 정부현금 220·
+  부담현금 10·부담현물 60·합계 290 등 정합.
+- **8-1 지원·부담계획 표(s2/p660/t0) 자동채움 추가**(2026-08-11 후속, `_fill_budget_81`):
+  표를 시그니처로 찾고, **c0=단계·c1=연차·c2=기관 anchor 를 파싱**해 첫 단계의 연차 그룹과 각 연차의 기관
+  슬롯을 구한 뒤, 제반사항 연차·기관(주관 먼저)을 슬롯에 매핑. 각 데이터행: 기관명(c2)·유형(c3)·
+  정부현금A(c4)·부담현금B(c5)·부담현물C(c6)·부담소계D(c7)·합계현금(c8)·합계현물(c9)·합계E(c10),
+  **비율행**(2행 슬롯): A/E(정수 c4)·B/D·C/D·D/E(1자리 내림 c5~c7). 단계 소계·총계(전체 합) 채움.
+  검증: 케이베츠(중소 80) A/E 80%·B/D 10.0%·C/D 90.0%·D/E 20.0%, 총계 E 2,142(=표지 합계). apply=4표·190셀.
+  - **한계**: 이 템플릿은 연차 슬롯이 **2개(연차1·2)** 뿐이라, 4연차 과제는 **1·2차년도만** 채워지고
+    3·4차년도는 슬롯이 없어 미채움(총계는 전체 합). 전 연차 채우려면 표 행 재구성(add_row) 필요 → 후속.
+- [x] `doc_fill.py` `_funding_breakdown`·`_org_type_map`·`_pct`·`_ratio_floor`·`_ratio_ae`·`_fill_budget_81`·
+  비율 상수, `_fill_cover` 연구비 블록 개편, apply/preview 에 `_fill_budget_81` 등록.
+  py_compile·서버 200. **저장 시(apply) 또는 빌드 시 반영**(프런트 무변경).
+
+### 2026-08-11 후속14 — 저장 버튼 누르면 문서 표에 즉시 반영
+
+- **질의**: "편집에서 **저장을 누르면 자동으로 채워지게**." (빌드 전에도 저장 시 문서 표 반영)
+- **사양**: `PUT /overview` 에 `apply: bool`(기본 False) 추가. **명시적 저장(저장 버튼)** 이면 저장 직후
+  `doc_fill.apply(pid)` 실행해 표지·요약문·편성도·연구비 표 셀을 yaml 에 즉시 반영, 응답 `applied`(stats).
+  **무음 자동저장**(필드 blur·모달 닫기)은 apply=False 로 빨리 저장만(문서 반영은 저장 버튼/빌드 시).
+  프런트 `saveOverview` 가 `apply=!opts.silent` 전달, 저장 토스트에 반영 칸 수 표시.
+- [x] `schemas.py` OverviewBody.apply, `main.py` put_overview(apply→doc_fill.apply, 실패 무해), `app.js`
+  API.saveOverview(apply)·saveOverview 토스트/상태(v=20260811k). 검증: 사본 PUT apply=true → applied
+  {tables:3, cells:104}. py_compile·JS밸런스·서버 200.
+- 유의: 반영은 yaml 셀까지. **최종 hwpx 는 [빌드]** 에서 생성(저장이 hwpx 를 새로 만들진 않음).
+
+### 2026-08-11 후속15 — 연구기간·정부출연금 '단계+차년도' 구조화
+
+- **질의**: "표지/요약문에서 정부출연금을 **단계로 나눠** (1단계 1·2차년도, 2단계 1·2차년도 …).
+  연차별 연구기간도 **단계+차년도** 입력."
+- **사양**: period 모델을 `{stage, year, range}` 로 확장. **라벨 = "{stage}단계 {year}"**(단계 없으면 차년도만,
+  `ovPeriodLabel`/`_period_label`). 이 라벨이 정부출연금 그리드 열·요약문 연차·표지·8-1 매핑의 **공통 키**.
+  - 프런트: period 행에 **단계 입력칸** 추가(`.ov-period-stage`, `.ov-narrow3`). `ovCurrentPeriodYears`·
+    collect·change 리스너·요약칸 재구성 모두 합성 라벨 사용. **구 데이터 호환**: 로드 시 stage 없으면 빈 값
+    (라벨=차년도=구 funding 키와 일치, 데이터 보존). 새 행(+연차)만 stage 기본 "1".
+  - 백엔드: `store._overview_serialize` 단계 표기. `doc_fill._period_label` 로 funding 키 매칭, 표지
+    연구기간 **단계별 매핑**(1단계→r21~24, 그 외 단계→r25~26), 연구비·8-1 도 합성 라벨. 8-1 은 단계 정보로
+    표의 단계1(연차1·2)에 1단계 데이터가 정확히 들어감(2단계는 단계n 최소 슬롯).
+- **검증**: 2단계×2연차 합성데이터 — 표지 기간 r21·r22(1단계)/r25·r26(2단계), 연구비·8-1 정합. 구 데이터
+  (f44ab9f7, stage 없음) 보존: r31 정부현금 220·부담현금 10, 8-1 케이베츠 A 80. py_compile·JS밸런스·서버 200.
+- [x] `app.js`(ovMakePeriod/ovPeriodLabel/ovCurrentPeriodYears/collect/리스너, v=20260811l), `styles.css`
+  (.ov-narrow3), `store.py`(직렬화), `doc_fill.py`(_period_label·표지기간 단계매핑·funding 키).
+
+### 2026-08-11 후속16 — 8-1 표를 단계 구조에 맞춰 자동 반영
+
+- **질의**: "단계가 나눠질 때 단계를 반영해서 8.1절도 자동 변경."
+- **접근 판단**: 병합표의 **행 구조를 재생성**(단계 블록 복제)하는 것은 tables 구조편집(restore→XML→re-extract)
+  경로가 까다롭고(resolve_table 실패·한컴 렌더 미검증) **문서 손상 위험**이 커, 이번엔 **텍스트 채움(무구조변경)**
+  으로 안전하게 처리.
+- **사양**(`_fill_budget_81` 다단계화): 표의 **모든 단계 그룹**(c0 anchor 숫자/‘n’)을 파싱하고, 제반사항
+  periods 를 **단계별로 그룹화**(단계 오름차순)해 표 단계그룹 ← 프로젝트 단계 순서대로 매핑. 각 단계에서
+  **단계 라벨(c0)을 실제 번호로 갱신**(‘n’→‘2’ 등), 연차(c1) 갱신, 연차별 기관 슬롯을 그 단계·연차 데이터로
+  채움(A/B/C/D·합계·비율행). **단계별 소계** + **총계(전체 합)**.
+- **한계**: 표 템플릿의 둘째 단계 블록(‘단계n’)은 **연차당 기관 슬롯이 1개**뿐이라, 2단계에 기관이 여럿이면
+  **1기관/연차만** 채워짐(1단계 블록은 4기관×2연차 완전). 2단계도 전 기관을 담으려면 **행 재구성(add_row)**
+  이 필요 — 구조편집은 손상 위험/검증 부담으로 별도 확인 후 진행.
+- **검증**: 2단계×2연차 합성데이터 — 단계1(연차1·2, 한국선급/케이베츠, 소계 432)·단계2(‘n’→‘2’ 라벨,
+  한국선급 110)·총계 882. 구 데이터(무단계) 케이베츠 A 80 보존. py_compile·서버 200. (프런트 무변경.)
+
+### 2026-08-11 후속17 — 8-1 표 단계 구조 자동 재구성(버튼)
+
+- **질의**: "(B) 8-1 표를 단계별 완전 블록으로 재생성해 자동화."
+- **핵심 발견**: `pipeline.restore` 의 후처리(글꼴·표레이아웃·출처·MD)가 문단 개수를 바꿔 좌표를 흔들어
+  `resolve_table` 이 실패했음. → **pure 복원(후처리 OFF)** 하면 좌표 보존되어 구조편집 가능.
+- **구현**:
+  - `pipeline.restore(pure=True)` 추가(후처리 env 전부 0). `tables._apply_structural(..., pure=True)`.
+  - `tables.rebuild_budget_stages(pid, tpath, N)`: **단계1 블록(연차·기관·비율행·소계 구조)을 lxml deepcopy 로
+    복제**해 단계2…N 생성, 축약 '단계n' 블록 제거, 데이터셀 비움, rowAddr 행순번 재부여·단계라벨 1…N,
+    rowCnt 갱신. 실패 시 `_apply_structural` 롤백(원상복구).
+  - `main._sync_budget_stages`(표 단계앵커 수·블록높이가 목표와 다를 때만 재구성) + `doc_fill.apply` 로 채움.
+  - **엔드포인트**: `POST /budget/sync-stages`(구조편집 ~수십 초라 저장 경로에서 분리, **전용 버튼**).
+  - 프런트: 정부출연금 헤더에 **‘8.1 표 단계 반영’ 버튼**(`btn-budget-sync`) + `budgetSyncStages`(먼저
+    저장→재구성 호출, "재구성 중… 수십 초" 상태). v=20260811m.
+- **검증**: 사본 2단계×2연차×4기관 — rebuild 21행→31행, 단계2 전체(4기관×2연차+비율행+소계) 생성,
+  doc_fill 240셀, 총계 1,360. 재호출 시 이미 일치면 skip. 엔드포인트 실측 ~57초(구조편집 48s+채움 6s).
+  py_compile·JS밸런스·라우트 등록·서버 200.
+- **유의**: 구조편집이라 **수십 초** 소요(버튼·상태표시). 빌드 후 **한글에서 표 정상 여부 확인 권장**
+  (여기선 재추출 왕복·doc_fill 로 구조 유효성만 검증, 한컴 렌더는 미검증). 실패는 자동 롤백.
+
+### 2026-08-11 후속18 — 8-1 재구성 정정(연차 유닛 단위·비영리 현물·연차2 비율)
+
+- **질의**(3건): ① 2단계 미반영 ② 비영리인데 현물이 들어감(템플릿 예시값) ③ 1단계 2차년도부터 비율칸 없음.
+- **원인·수정**:
+  - ② `doc_fill._fill_budget_81` 이 0값(부담현금/현물)을 `_put`(빈값 skip)로 처리해 **템플릿 예시값
+    (180,000 등)이 잔존**. → `_cell()` 로 **0이면 명시적 빈칸(`_clear`)** 처리. 비영리·대학·출연연은 부담
+    현금/현물 빈칸(정부지원 100%).
+  - ③ 표 템플릿의 연차2 블록은 연차1과 달리 **비율행이 없는** 구조였음. `rebuild_budget_stages` 를
+    **연차1 서브그룹(기관 데이터행+비율행)을 원자 유닛**으로 삼아 **모든 연차를 그 구조로 재생성**하도록
+    전면 재작성 → 연차2 이후에도 비율행 생성.
+  - ①③ 재구성 시그니처를 `stage_year_counts`(단계별 연차 수)로 바꿔 단계×연차 완전 구조 생성. 단계 c0
+    셀은 각 단계 첫 행에만(rowSpan=연차수×유닛높이+소계), 후속 연차·소계행은 c0 제거(rowSpan 이 덮음).
+- **검증**(사본 2단계×2연차×4기관): rebuild 39행(헤더4+단계1[17]+단계2[17]+총계1), 병합 span 정확
+  (단계 c0 rowSpan 17, 연차 c1 rowSpan 8). doc_fill 304셀. 비영리(한국선급·고려대) 현물 빈칸, 중소/대기업만
+  부담. 연차1·2 모두 비율행(케이베츠 B/D 10.0%·C/D 90.0%). 총계 1,080/40/240/1,360. 엔드포인트 실측 58초.
+  py_compile·서버 200.
+- `tables.py` `rebuild_budget_stages`(연차유닛 재조립)·`_c1_text`·`_tc_at`·`_set_rowspan`·`_regen_ids_list`,
+  `main._sync_budget_stages`(단계별 연차수 counts), `doc_fill._cell`(0=빈칸). 프런트 무변경(버튼 그대로).
+
+### 2026-08-11 후속19 — 8장 비목표 연구개발비 총액 채움 + 세부표 기관수 복제
+
+- **질의**(위 ① #82). 대상 표(8. 연구개발비 사용 계획, KEIT 표준 서식, 시그니처로 탐색):
+  - **8-2 총괄표**(`s2/p672/t0`, 시그니처 `인건비 비율(E1/M)`+`직접비 소계`): 전 기관 합산.
+    연차 열 = 1단계 c5·c6·c7 / 2단계 c8·c9 / 합계 c10. `연구개발비 총액(M=K+L)` = r21.
+  - **8-3 비목별 세부표**(`s2/p682/t0`·`s2/p704/t0`…, 시그니처 `수정인건비`+`간접비 비율`): 기관별.
+    연차 열 = 1단계 c4·c5·c6 / 2단계 c7·c8·c9 / 합계 c10. `연구개발비 총액(M=K+L)` = r25.
+- **확정 사양 (A) 연구개발비 총액 채움**(안전, `doc_fill` = 저장/빌드 시 자동):
+  - 값 = **합계 E**(정부출연금 A + 기업유형 매칭비율로 산정한 기관부담 B+C). `_funding_breakdown`
+    재사용(표지 합계열·8-1과 동일 산식). 오직 **M 행(총액)만** 채운다(인건비·재료비 등 세부 비목은
+    제반사항에 근거 없음 → 템플릿 보존, 빈칸). 합계열 = 그 행 연차 합.
+  - **8-2 총괄**: M 행 각 연차 열 = 그 연차 전 기관 E 합, 합계열 = 총계.
+  - **8-3 세부**: 문서상 세부표를 **등장 순서대로 기관(주관 먼저, 그 뒤 공동 입력순)에 매핑**,
+    각 표 M 행 = 그 기관 연차별 E, 합계열 = 그 기관 총액.
+  - **연차→열 매핑**: 표의 단계 헤더(`N단계` colspan)로 연차 열을 단계별로 나눈 뒤,
+    프로젝트 periods 를 단계별로 그룹화해 매핑. **단, 프로젝트가 단일 단계(또는 무단계)면 단계 구분 없이
+    연차 열 전체에 순서대로 평면 매핑**(예 4연차 단일단계 → c5·c6·c7·c8·c9 순). 연차 라벨(`n차년도`)과
+    달력(20xx) 헤더 셀도 실제 값으로 갱신(있을 때만, `_set_paras` 정확 덮어쓰기).
+- **확정 사양 (B) 세부표 기관수 복제**(위험, 전용 버튼 = 8-1 후속17 패턴):
+  - `POST /budget/sync-detail`(구조편집 수십 초, 저장경로와 분리) → `tables.rebuild_budget_detail(pid, N)`.
+    pure 복원(후처리 OFF)으로 좌표 보존 후, **세부표 host 문단을 lxml deepcopy** 로 복제해 개수를 N(=참여기관
+    수)에 맞춘다(부족하면 마지막 세부표 뒤에 추가, 많으면 뒤에서 제거). ID 재생성·재추출. 실패 시 롤백.
+  - 프런트: 정부출연금 헤더에 **‘8장 세부표 기관수 반영’ 버튼**(`btn-detail-sync`) → 저장 후 호출,
+    이어서 `doc_fill.apply` 로 총액 채움. 8-1 버튼과 동일 UX(수십 초·상태표시).
+- **한계**: (A) 연차 열이 5개(1단계3+2단계2)뿐이라 5연차 초과 과제는 초과분 미채움(8-1과 동일 템플릿 한계).
+  (B) 구조편집은 한컴 렌더 미검증(재추출 왕복·doc_fill 로 구조 유효성만 확인) → 빌드 후 한글 확인 권장.
+  세부표 복제는 **8-3 비목표(host 문단)만** 복제(사이 작성요령/설명 표는 제출 시 삭제 대상이라 미복제).
+
+구현 상태(완료 2026-08-11):
+- [x] `backend/doc_fill.py`: `_find_tables`(복수·문서순)·`_cal_year`·`_ordered_insts`(주관먼저)·`_budget_model`
+  (M행·연차열·단계spans·라벨셀 유도)·`_period_col_map`(다단계=단계별/단일=평면)·`_e_by_label`·`_fill_bimok`·
+  `_fill_budget_82`(총괄)·`_fill_budget_83`(기관별 세부). `_FILLERS`/`apply`/`preview` 에 2종 등록(저장·빌드 자동).
+- [x] `backend/tables.py`: `_apply_structural_doc`(doc 단위 구조편집+롤백)·`rebuild_budget_detail`
+  (세부표 host 문단 deepcopy 복제/제거로 개수=기관수, ID 재생성, pure 복원). 
+- [x] `backend/main.py`: `POST /budget/sync-detail` + `_sync_budget_detail`(개수 불일치 시만 재구성 후 doc_fill.apply).
+- [x] `frontend`: 정부출연금 헤더에 **‘8장 세부표 기관수 반영’ 버튼**(`btn-detail-sync`)·`budgetSyncDetail`·
+  API·리스너, `index.html` v=20260811n.
+- [x] 검증(사본 f44ab9f7, 4기관·4연차·단일단계): sync 2→4 세부표(211셀 동일구조)·doc_fill 6표 258셀 병합.
+  세부 M행 한국선급50/100/100/40=290·케이베츠(중소)100/150/150/62=462·고려대40/50/60/20=170·
+  대우건설(대기업)100/360/360/400=1,220, 총괄 290/660/670/522·총계 2,142(=표지 합계E, 세부합과 일치).
+  2단계×2연차(37580ff5) preview 도 단계별 열매핑 정확. py_compile·라우트·서버 import OK. 실데이터 미변경.
+
+## ④ 미결/후속
+
+- 제반사항은 **절 무관 전체 공통**으로 투입(절별 발췌·선택 투입은 후속). 길어지면 8000자 절단.
+- 표(예: 7-1 참여연구자, 8장 연구개발비) 자동 채움까지 연결하려면 구조화 파싱이 필요 — 현재는
+  자유텍스트를 생성 컨텍스트로만 투입(표 셀 직접 채움은 범위 밖).
+- 자동 저장은 blur+버튼. 실시간 협업/충돌 병합은 범위 밖.
+- 정부출연금 그리드 셀 금액은 `(기관명, 연차라벨)` 키로 보존 → **기관명/연차 라벨을 바꾸면** 이전 키의
+  금액은 유효 키를 잃어 표에서 사라진다(=먼저 기관·연차를 정한 뒤 금액 입력 권장). 행 정체성 추적은 후속.
+- 하위호환 `period`(문자열)은 `periods` 로부터 파생 저장. 구 데이터(periods 없음)는 GET 시 그대로 두되
+  모달에서 연차를 입력·저장하면 `periods` 로 이관된다.
+- **doc_fill 셀 좌표는 KEIT 표준 서식 가정**: 표는 시그니처로 찾지만 표 안 (row,col) 은 표준 서식에
+  고정. 서식이 크게 다른 원본이면 매핑이 어긋날 수 있음(표 못 찾으면 조용히 건너뜀).
+- **정부지원비 단위**: 정부출연금 그리드=천원 → 표지 정부지원 현금열에 그대로 합산. 기관부담·현물은
+  제반사항에 없어 표지 해당 열은 빈칸(8장/수기 입력). 표지 합계행은 정부지원 현금만 반영.
+- **doc_fill 은 빌드 시 표 셀을 덮어씀**: 표지·요약문·편성도 셀을 그리드 편집기로 수기 수정해도 다음
+  빌드에서 제반사항 값으로 덮인다(제반사항이 단일 출처). 수기 우선이 필요하면 후속 과제.
+- 3-3 편성도의 상세(참여연구원 명단·참여율 등)는 자동 채움 범위 밖 — 기관명·기간·담당내용만 채운다.
