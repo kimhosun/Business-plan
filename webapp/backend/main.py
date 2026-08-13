@@ -405,6 +405,8 @@ def chat_node(pid: str, nid: str, body: ChatBody):
             "input": detail.get("input") or "",
             "rfp": store.read_rfp_text(pid),  # 업로드된 RFP 를 작성 근거로 반영
             "overview": store.read_overview(pid),  # 제반사항(공통 정보)을 최우선 근거로
+            # 이 절 기존 표의 열 구조 힌트(빌드 시 흡수되게 AI 가 열에 맞춰 표 작성)
+            "table_hint": _safe_table_hint(pid, nid),
         }
         # 관련 스킬 선택(질문 + 절 제목 맥락). 지정이 있으면 그대로 쓴다.
         picked: list[dict] = []
@@ -501,6 +503,14 @@ async def match_skills(body: SkillMatchBody):
     return {"matched": skills.brief(matched)}
 
 
+def _safe_table_hint(pid: str, nid: str) -> str:
+    """이 절 기존 표의 열 구조 힌트(실패해도 작성/변환을 막지 않게 조용히 '')."""
+    try:
+        return tables.table_schema_hint(pid, nid)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 @app.post("/api/projects/{pid}/nodes/{nid}/convert")
 def convert_node(pid: str, nid: str):
     """Claude 변환 → result.yaml 저장 + yaml/ 병합 → {result:[{path,before,after,marker}]}"""
@@ -515,6 +525,8 @@ def convert_node(pid: str, nid: str):
         input_text = detail.get("input") or ""
         rfp_text = store.read_rfp_text(pid)  # 업로드된 RFP 를 변환 근거로 반영
         overview_text = store.read_overview(pid)  # 제반사항(공통 정보)을 최우선 근거로
+        # 이 절 기존 표의 열 구조 힌트 → AI 가 그 열에 맞춰 마크다운 표를 쓰게 함(빌드 시 흡수).
+        table_hint = _safe_table_hint(pid, nid)
 
         # 병합 전 현재 yaml 본문(before) 스냅샷
         before_index = pipeline._all_nodes_by_path(pid)
@@ -522,6 +534,7 @@ def convert_node(pid: str, nid: str):
         result = claude_service.convert_input(
             input_text, template, prompts, targets,
             rfp_text=rfp_text, nid=nid, overview_text=overview_text,
+            table_hint=table_hint,
         )
 
         store.write_result(pid, nid, result)

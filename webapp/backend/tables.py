@@ -123,6 +123,88 @@ def tables_for(pid: str, nid: str) -> dict:
     }
 
 
+# ── 작성 힌트: 이 절 기존 표의 열 구조 → 프롬프트용 ───────────────────────────
+import re as _re  # noqa: E402
+
+# doc_fill 이 제반사항(overview)으로 채우는 정형 표는 AI 가 만들 대상이 아니므로 힌트에서 제외.
+_DOCFILL_TABLE_SIGS = (
+    ("연구개발과제명", "주관연구개발기관"),   # 표지
+    ("국문핵심어",),                          # 요약문
+    ("담당기술내용", "참여연구원"),           # 3-3 편성도
+    ("기관부담연구개발비", "비율"),           # 8-1 지원·부담계획
+)
+
+
+def _norm_txt(s: str) -> str:
+    return _re.sub(r"[^0-9A-Za-z가-힣]", "", (s or ""))
+
+
+def _is_docfill_table(norm_blob: str) -> bool:
+    return any(all(_norm_txt(t) in norm_blob for t in sig)
+               for sig in _DOCFILL_TABLE_SIGS)
+
+
+def _header_columns(cells: list[dict]) -> list[str]:
+    """표의 머리행(row0, colspan 아래 row1 소제목 포함)에서 열 라벨 목록을 만든다."""
+    row1 = {c["col"]: c for c in cells if c["row"] == 1}
+    cols: list[str] = []
+    for cell in sorted((c for c in cells if c["row"] == 0), key=lambda x: x["col"]):
+        label = (cell.get("text") or "").replace("\n", " ").strip()
+        span = int(cell.get("colspan", 1) or 1)
+        subs: list[str] = []
+        if span > 1:
+            for cc in range(cell["col"], cell["col"] + span):
+                s = row1.get(cc)
+                st = (s.get("text") or "").replace("\n", " ").strip() if s else ""
+                if st:
+                    subs.append(st)
+        if subs:
+            label = f"{label}({'/'.join(subs)})" if label else "/".join(subs)
+        cols.append(label or "-")
+    return cols
+
+
+def table_schema_hint(pid: str, nid: str, *, max_tables: int = 8,
+                      max_chars: int = 2000) -> str:
+    """이 절 문서에 이미 있는 '내용 표'의 열 구조를 프롬프트 힌트 문자열로.
+
+    작성요령(제출 시 삭제)·doc_fill 정형 표(표지·요약문·편성도·8-1)는 제외한다.
+    AI 가 마크다운 표를 그 열 구조에 맞춰 쓰면 빌드 시 기존 표에 정확히 흡수된다."""
+    try:
+        data = tables_for(pid, nid)
+    except Exception:  # noqa: BLE001
+        return ""
+    if not data.get("has_tables"):
+        return ""
+    lines: list[str] = []
+    for t in data["tables"]:
+        cells = t.get("cells") or []
+        blob = _norm_txt(" ".join(c.get("text") or "" for c in cells))
+        if "작성요령" in blob or _is_docfill_table(blob):
+            continue
+        cols = [c for c in _header_columns(cells) if c and c != "-"]
+        if len(cols) < 2:
+            continue
+        # 머리글이 문단 길이(설명·참고자료 표)면 채울 표가 아니므로 제외.
+        if any(len(c) > 40 for c in cols):
+            continue
+        lines.append(
+            f"- 표{t['index'] + 1}({t.get('rows', 0)}행×{t.get('cols', 0)}열): "
+            "| " + " | ".join(cols) + " |")
+        if len(lines) >= max_tables:
+            break
+    if not lines:
+        return ""
+    body = "\n".join(lines)
+    if len(body) > max_chars:
+        body = body[:max_chars].rstrip() + " …"
+    return (
+        "[기존 표 양식(이 절 문서에 이미 있는 표)]\n"
+        "표 형태의 내용을 쓸 때는 **아래 표의 열 머리글·순서를 그대로 따라** 마크다운 표"
+        "(| 열1 | 열2 | … |)로 작성하라. 열을 추가·삭제·재배치하지 말 것. 빌드 시 이 마크다운 "
+        "표가 아래 기존 표에 자동으로 채워진다(중복 표를 새로 만들지 않는다).\n" + body)
+
+
 # ── 저장(그리드 → yaml) ──────────────────────────────────────────────────────
 def _spread(text: str, paths: list[str]) -> list[dict]:
     """셀 값(줄바꿈 포함)을 셀의 문단 path 들에 줄 단위로 분배."""

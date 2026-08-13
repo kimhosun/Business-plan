@@ -556,6 +556,9 @@ _CONVERT_SYSTEM = (
     "녹인다. 사용자 입력이 비었거나 부족하면 제반사항·RFP 근거로 이 절을 구체적으로 작성한다"
     "(빈 입력이라고 빈 결과를 내지 말 것).\n"
     "3) [문체]·[구성]·[작성요령]을 반드시 따른다(개조식·정량 표기 등).\n"
+    "3-1) [기존 표 양식]이 주어지면, 표로 낼 내용은 **그 표의 열 머리글·순서를 그대로 따라** "
+    "마크다운 표(| 열1 | 열2 | … |)로 작성한다(열 추가·삭제·재배치 금지). 새 표를 임의 형식으로 "
+    "만들지 말 것 — 빌드 시 이 마크다운 표가 문서의 기존 표에 자동으로 채워진다.\n"
     "4) " + _VERIFY_MARK_RULE + "\n"
     "5) 정확히 N개의 세그먼트로 나눈다. 출력은 길이 N 의 JSON 문자열 배열 하나뿐이다"
     "(마커/번호는 넣지 말 것 — 번호는 후처리로 붙는다. 단 [[확인]]…[[/확인]] 는 예외로 유지). "
@@ -637,6 +640,7 @@ def _claude_convert_input(
     rfp_text: str = "",
     nid: str = "",
     overview_text: str = "",
+    table_hint: str = "",
 ) -> list[dict]:
     n = len(targets)
     prompts = prompts or {}
@@ -655,13 +659,15 @@ def _claude_convert_input(
         f"가져온다). 세그먼트 개수는 정확히 {n}개로 유지한다."
         if want_img else ""
     )
+    thint = (table_hint or "").strip()
     user = (
         f"{_overview_block(overview_text, nid)}\n\n"
         f"[RFP 원문]\n{rfp or '(업로드된 RFP 없음)'}\n\n"
         f"[문체(style)]\n{style or '(지정 없음)'}\n\n"
         f"[구성(structure)]\n{structure or '(지정 없음)'}\n\n"
         f"[작성요령]\n{guide_txt or '(없음)'}\n\n"
-        f"[사용자 입력]\n{input_text or '(비어있음)'}\n\n"
+        + (f"{thint}\n\n" if thint else "")
+        + f"[사용자 입력]\n{input_text or '(비어있음)'}\n\n"
         f"위 [제반사항]·[RFP 원문]·[사용자 입력]을 근거로(상충 시 제반사항 우선) 이 절을 지정 "
         f"문체/구성/작성요령에 맞춰 작성하고, 정확히 {n}개의 세그먼트로 나눠 길이 {n}의 "
         f"JSON 문자열 배열로만 출력하라."
@@ -688,7 +694,9 @@ _CHAT_SYSTEM = (
     "당신은 정부 R&D 연구개발계획서의 한 절(節)을 사용자와 대화하며 작성하는 집필자다. "
     "사용자는 채팅으로 재료·지시를 주고, 당신은 그 절의 본문 초안을 통째로 다시 써 준다.\n"
     "규칙\n"
-    "1) 아래 [양식 템플릿]의 번호/마커 규칙과 [작성요령]·[문체]·[구성]을 반드시 따른다.\n"
+    "1) 아래 [양식 템플릿]의 번호/마커 규칙과 [작성요령]·[문체]·[구성]을 반드시 따른다. "
+    "[기존 표 양식]이 있으면 표 내용은 그 열 머리글·순서를 그대로 따라 마크다운 표로 쓰고 "
+    "(열 추가·삭제 금지) 새 표를 임의로 만들지 않는다(빌드 시 기존 표에 채워진다).\n"
     "1-0) [제반사항]이 있으면 참여기관·기관형태·역할·연구기간·기관별 정부출연금·주요 연구목표 중 "
     "이 절과 관련되는 항목(블록 끝 '※ 이 절에 반영' 안내 우선)을 확정 정보로 최우선 반영하고, "
     "RFP 와 상충하면 제반사항을 따른다(무관한 항목은 넣지 않는다).\n"
@@ -727,12 +735,14 @@ def _chat_context_block(context: dict) -> str:
     # 스킬 보관함(backend/skills.py)에서 이 질문과 관련되어 고른 지침들.
     # 순수 모듈로 두기 위해 여기서는 이미 고른 것을 렌더만 한다.
     skills = [s for s in (context.get("skills") or []) if (s or {}).get("body")]
+    thint = (context.get("table_hint") or "").strip()
 
     return (
         f"\n\n[대상 절]\n{label} {title}".rstrip()
         + f"\n\n{_overview_block(overview, context.get('nid'))}"
         + f"\n\n[RFP 원문]\n{rfp or '(업로드된 RFP 없음)'}"
         + f"\n\n[작성요령]\n{chr(10).join('- ' + g for g in guides) or '(없음)'}"
+        + (f"\n\n{thint}" if thint else "")
         + f"\n\n[양식 템플릿]\n```yaml\n{tpl_yaml}```"
         + f"\n\n[문체]\n{prompts.get('style') or '(지정 없음)'}"
         + f"\n\n[구성]\n{prompts.get('structure') or '(지정 없음)'}"
@@ -1109,6 +1119,7 @@ def convert_input(
     rfp_text: str = "",
     nid: str = "",
     overview_text: str = "",
+    table_hint: str = "",
 ) -> list[dict]:
     """[제반사항]+[RFP 원문]+[사용자 입력]을 근거로 이 절을 작성·분할해 targets에 매핑한 반환.
 
@@ -1126,6 +1137,7 @@ def convert_input(
         return _claude_convert_input(
             input_text, template, prompts, targets,
             rfp_text=rfp_text, nid=nid, overview_text=overview_text,
+            table_hint=table_hint,
         )
     except Exception:  # noqa: BLE001 - 어떤 오류든 스텁 폴백
         return _stub_convert_input(input_text, template, prompts, targets)
