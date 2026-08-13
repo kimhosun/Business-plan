@@ -454,6 +454,212 @@ def apply_fonts(hwpx_path, *, face: str = "돋움", cell_face: str | None = None
             "runs_changed": runs_changed}
 
 
+# ── 확인 필요 구간 빨강 표기(후처리) ──────────────────────────────────────────
+# AI 변환/채팅이 "사람이 검증해야 할 값"(실적 수치·고유명사·특허번호·인명·날짜·금액 등)을
+# 짝 마커 [[확인]]…[[/확인]] 로 감싸 둔다. 최종 hwpx 빌드의 맨 마지막에 이 마커 구간의
+# run 을 글자색 빨강(#FF0000)으로 바꾸고 마커 문자는 제거한다. 글꼴/크기는 원래 run 것을
+# 유지하고 '색만' 덮으므로, 앞선 apply_fonts(돋움체 12pt/표셀 8pt) 뒤에 돌려야 한다.
+# 마커가 없으면 완전 무동작(no-op) — 순수 왕복 보존.
+_VERIFY_OPEN = "[[확인]]"
+_VERIFY_CLOSE = "[[/확인]]"
+
+
+def _augment_header_color(header_xml: str, src_ids, color: str):
+    """src charPr id 각각의 '색만 바꾼(textColor) 빨강 변형'을 header 에 추가.
+
+    반환 (header_xml, {src_id(str): red_id(str)}). src 를 못 찾으면 base(0 또는 첫 id)로 폴백."""
+    ids = [int(i) for i in re.findall(r'<hh:charPr\s+id="(\d+)"', header_xml)]
+    if not ids:
+        return header_xml, {}
+    base_id = 0 if 0 in ids else ids[0]
+    next_id = max(ids) + 1
+    mapping: dict[str, str] = {}
+    additions: list[str] = []
+    for src in src_ids:
+        src = str(src)
+        m = re.search(rf'<hh:charPr\s+id="{re.escape(src)}"[^>]*>.*?</hh:charPr>',
+                      header_xml, re.S)
+        if not m:
+            m = re.search(rf'<hh:charPr\s+id="{base_id}"[^>]*>.*?</hh:charPr>',
+                          header_xml, re.S)
+            if not m:
+                continue
+        cp = m.group(0)
+        new_id = str(next_id)
+        next_id += 1
+        cp2 = re.sub(r'(<hh:charPr\s+id=")\d+(")', rf"\g<1>{new_id}\g<2>", cp, count=1)
+        if re.search(r'<hh:charPr\b[^>]*?\btextColor="', cp2):
+            cp2 = re.sub(r'(<hh:charPr\b[^>]*?\btextColor=")[^"]*(")',
+                         rf"\g<1>{color}\g<2>", cp2, count=1)
+        else:  # textColor 속성이 없으면 id 뒤에 삽입
+            cp2 = re.sub(r'(<hh:charPr\s+id="\d+")',
+                         rf'\g<1> textColor="{color}"', cp2, count=1)
+        additions.append(cp2)
+        mapping[src] = new_id
+    if not additions:
+        return header_xml, {}
+    header_xml = header_xml.replace(
+        "</hh:charProperties>", "".join(additions) + "</hh:charProperties>", 1)
+    header_xml = re.sub(
+        r'<hh:charProperties itemCnt="(\d+)">',
+        lambda mm: f'<hh:charProperties itemCnt="{int(mm.group(1)) + len(additions)}">',
+        header_xml, count=1,
+    )
+    return header_xml, mapping
+
+
+def _segment_marks(text: str) -> list[tuple[bool, str]]:
+    """[[확인]]…[[/확인]] 를 기준으로 (is_red, segment) 리스트로 분해(다중 마커 지원)."""
+    segs: list[tuple[bool, str]] = []
+    i, red = 0, False
+    n = len(text)
+    while i < n:
+        if not red:
+            j = text.find(_VERIFY_OPEN, i)
+            if j < 0:
+                segs.append((False, text[i:]))
+                break
+            if j > i:
+                segs.append((False, text[i:j]))
+            i = j + len(_VERIFY_OPEN)
+            red = True
+        else:
+            j = text.find(_VERIFY_CLOSE, i)
+            if j < 0:  # 짝 없음 — 나머지를 빨강으로
+                segs.append((True, text[i:]))
+                break
+            if j > i:
+                segs.append((True, text[i:j]))
+            i = j + len(_VERIFY_CLOSE)
+            red = False
+    return segs
+
+
+def _split_marked_runs(x: str, mapping: dict) -> tuple[str, int]:
+    """마커 구간을 빨강 run 으로 분할하고 마커를 제거. (xml, 빨강 run 을 만든 run 수).
+
+    run 안에 <hp:t> 가 여러 개거나 제어 마크업(ctrl·lineBreak 등)이 섞여도 순서를 보존한다.
+    빨강 여부가 바뀌는 지점에서만 run 을 새로 연다(같은 색은 한 run 으로 묶음)."""
+    changed = 0
+
+    def _repl(m: "re.Match") -> str:
+        nonlocal changed
+        attrs, body = m.group(1), m.group(2)
+        if _VERIFY_OPEN not in body and _VERIFY_CLOSE not in body:
+            return m.group(0)
+        cm = re.search(r'charPrIDRef="(\d+)"', attrs)
+        red = mapping.get(cm.group(1)) if cm else None
+        if not red:  # 색을 못 정하면 마커만 제거
+            nb = body.replace(_VERIFY_OPEN, "").replace(_VERIFY_CLOSE, "")
+            return f"<hp:run{attrs}>{nb}</hp:run>"
+        red_attrs = re.sub(r'charPrIDRef="\d+"', f'charPrIDRef="{red}"', attrs, count=1)
+
+        # body 를 [(kind, ...)] 조각으로: 't'=<hp:t>, 'raw'=그 밖 마크업(순서 보존).
+        pieces: list[tuple] = []
+        pos = 0
+        for tm in re.finditer(r"<hp:t\b([^>]*)>(.*?)</hp:t>", body, re.S):
+            if tm.start() > pos:
+                pieces.append(("raw", body[pos:tm.start()]))
+            pieces.append(("t", tm.group(1), tm.group(2)))
+            pos = tm.end()
+        if pos < len(body):
+            pieces.append(("raw", body[pos:]))
+
+        out: list[str] = []
+        cur: list[str] = []
+        color = {"red": False, "made_red": False}
+
+        def _flush():
+            if cur:
+                a = red_attrs if color["red"] else attrs
+                out.append(f"<hp:run{a}>{''.join(cur)}</hp:run>")
+                cur.clear()
+
+        for p in pieces:
+            if p[0] == "raw":
+                cur.append(p[1])  # 제어 마크업은 현재 색 그대로
+                continue
+            t_attrs, text = p[1], p[2]
+            if _VERIFY_OPEN not in text and _VERIFY_CLOSE not in text:
+                cur.append(f"<hp:t{t_attrs}>{text}</hp:t>")  # 마커 없음 → 원형 유지
+                continue
+            ta = t_attrs if "xml:space" in t_attrs else t_attrs + ' xml:space="preserve"'
+            for is_red, seg in _segment_marks(text):
+                if seg == "":
+                    continue
+                if is_red != color["red"]:
+                    _flush()
+                    color["red"] = is_red
+                if is_red:
+                    color["made_red"] = True
+                cur.append(f"<hp:t{ta}>{seg}</hp:t>")
+        _flush()
+        if not out:
+            return m.group(0)
+        if color["made_red"]:
+            changed += 1
+        return "".join(out)
+
+    x2 = re.sub(r"<hp:run\b([^>]*)>(.*?)</hp:run>", _repl, x, flags=re.S)
+    # 짝이 run 을 넘어가는 예외 등으로 남은 마커 문자열은 일괄 제거(색만 못 입힐 뿐 마커는 안 남김).
+    x2 = x2.replace(_VERIFY_OPEN, "").replace(_VERIFY_CLOSE, "")
+    return x2, changed
+
+
+def apply_verify_marks(hwpx_path, *, color: str = "#FF0000") -> dict:
+    """최종 hwpx 에서 [[확인]]…[[/확인]] 구간을 글자색 빨강으로 바꾸고 마커를 제거.
+
+    반환 {ok, marks(빨강 charPr 종류), runs_changed, reason?}. 마커가 없으면 파일 미변경.
+    실패해도 예외를 던지지 않는다(빌드 전체를 막지 않게)."""
+    path = str(hwpx_path)
+    try:
+        with zipfile.ZipFile(path) as z:
+            infos = z.infolist()
+            blobs = {zi.filename: z.read(zi.filename) for zi in infos}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": f"open: {exc}"}
+
+    sect_names = [n for n in blobs if re.search(r"section\d+\.xml$", n)]
+    sects = {n: blobs[n].decode("utf-8") for n in sect_names}
+    # 마커를 가진 run 의 charPrIDRef 집합을 먼저 모은다(빨강 변형을 필요한 것만 만든다).
+    src_ids: set[str] = set()
+    for sx in sects.values():
+        for m in re.finditer(r"<hp:run\b([^>]*)>(.*?)</hp:run>", sx, flags=re.S):
+            if _VERIFY_OPEN in m.group(2):
+                cm = re.search(r'charPrIDRef="(\d+)"', m.group(1))
+                if cm:
+                    src_ids.add(cm.group(1))
+    if not src_ids and not any(_VERIFY_OPEN in sx for sx in sects.values()):
+        return {"ok": True, "marks": 0, "runs_changed": 0}  # 마커 없음 → 무동작
+
+    hdr_name = next((n for n in blobs if n.endswith("header.xml")), None)
+    if not hdr_name:
+        return {"ok": False, "reason": "no header.xml"}
+    header = blobs[hdr_name].decode("utf-8")
+    header2, mapping = _augment_header_color(header, src_ids, color)
+    blobs[hdr_name] = header2.encode("utf-8")
+
+    runs_changed = 0
+    for name, sx in sects.items():
+        sx2, n = _split_marked_runs(sx, mapping)
+        blobs[name] = sx2.encode("utf-8")
+        runs_changed += n
+
+    tmp = path + ".tmpverify"
+    try:
+        with zipfile.ZipFile(tmp, "w") as zf:
+            for zi in infos:  # 순서·압축방식(mimetype=stored) 보존
+                zf.writestr(zi, blobs[zi.filename])
+        os.replace(tmp, path)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            os.path.exists(tmp) and os.remove(tmp)
+        except OSError:
+            pass
+        return {"ok": False, "reason": f"write: {exc}"}
+    return {"ok": True, "marks": len(mapping), "runs_changed": runs_changed}
+
+
 # ── 표 레이아웃: 셀 글자 가로 가운데정렬 + 표 폭을 용지(본문영역) 폭에 맞춤 ──────
 # 최종 hwpx 의 모든 표에 대해:
 #   (1) 셀 안 문단 정렬을 CENTER 로 (header.xml 에 center paraPr 추가 후 tc 안 <hp:p>
@@ -829,6 +1035,166 @@ def _leading_text(x: str, pos: int) -> str:
     return "".join(re.findall(r"<hp:t[^>]*>(.*?)</hp:t>", seg, re.S))
 
 
+# ── 개조식 여러 줄(\n)을 줄별 개별 문단으로 분리(후처리) ─────────────────────
+# 변환/자동작성이 한 절의 개조식 여러 항목(○·-·□ …)을 리터럴 개행 '\n' 으로 이어
+# 한 <hp:p> 안에 몰아넣는 경우가 있다. 이러면 마커가 섞여 단일 paraPr 로는 마커별
+# 내어쓰기가 불가능하다(현재 apply_hanging_indent 는 이런 문단의 내어쓰기를 0 으로
+# 정규화만 함 → 둘째 줄이 여백으로 되돌아가 이미지처럼 정렬되지 않음). 이 후처리로
+# '\n' 문단을 줄별 개별 <hp:p> 로 분리하면, 각 줄이 단일 마커 문단이 되어 이어지는
+# apply_hanging_indent 가 마커 폭만큼 정확히 내어써 준다.
+#
+# 표 셀 안 문단, 중첩(표·그림·secPr 포함) 문단은 건드리지 않는다(구조 보존). 각 run 의
+# 서식(charPrIDRef)·hp:t 속성은 그대로 두고 텍스트만 줄 경계로 나눈다.
+def _split_para_by_newline(attrs: str, body: str, next_id) -> list[str]:
+    """<hp:p attrs>body</hp:p> 를 body 안 '\n' 기준으로 여러 문단 조각으로. 첫 조각은
+    원래 id, 이후는 새 id. 줄이 하나뿐이면 [원본] 을 그대로 돌려준다."""
+    body = re.sub(r"<hp:linesegarray>.*?</hp:linesegarray>", "", body, flags=re.S)
+
+    # body 를 run/그밖 마크업으로 토큰화(순서 보존)
+    tokens: list[tuple] = []
+    pos = 0
+    for rm in re.finditer(r"<hp:run\b([^>]*)>(.*?)</hp:run>", body, re.S):
+        if rm.start() > pos:
+            tokens.append(("raw", body[pos:rm.start()]))
+        tokens.append(("run", rm.group(1), rm.group(2)))
+        pos = rm.end()
+    if pos < len(body):
+        tokens.append(("raw", body[pos:]))
+
+    lines: list[list[str]] = [[]]  # 각 줄 = run/raw 조각 리스트
+    for tk in tokens:
+        if tk[0] == "raw":
+            if tk[1].strip():
+                lines[-1].append(tk[1])
+            continue
+        rattrs, rbody = tk[1], tk[2]
+        # run 내부를 <hp:t> 와 그밖으로 다시 토큰화
+        inner: list[tuple] = []
+        rp = 0
+        for tm in re.finditer(r"<hp:t\b([^>]*)>(.*?)</hp:t>", rbody, re.S):
+            if tm.start() > rp:
+                inner.append(("rraw", rbody[rp:tm.start()]))
+            inner.append(("t", tm.group(1), tm.group(2)))
+            rp = tm.end()
+        if rp < len(rbody):
+            inner.append(("rraw", rbody[rp:]))
+
+        frag: list[str] = []  # 현재 줄에 들어갈 run 내부
+
+        def _flush_run():
+            if frag:
+                lines[-1].append(f"<hp:run{rattrs}>{''.join(frag)}</hp:run>")
+                frag.clear()
+
+        for it in inner:
+            if it[0] == "rraw":
+                frag.append(it[1])
+                continue
+            tattrs, text = it[1], it[2]
+            segs = text.split("\n")
+            for k, seg in enumerate(segs):
+                if k > 0:            # 개행 경계 → 현재 run·줄 닫고 새 줄 시작
+                    _flush_run()
+                    lines.append([])
+                if seg != "":
+                    ta = tattrs if "xml:space" in tattrs else tattrs + ' xml:space="preserve"'
+                    frag.append(f"<hp:t{ta}>{seg}</hp:t>")
+        _flush_run()
+
+    if len(lines) <= 1:
+        return [f"<hp:p{attrs}>{body}</hp:p>"]
+
+    out: list[str] = []
+    for i, ln in enumerate(lines):
+        inner_xml = "".join(ln)
+        if i == 0:
+            a = attrs
+        else:  # 새 문단 id 부여(중복 방지)
+            nid = str(next_id[0]); next_id[0] += 1
+            if re.search(r'\bid="\d+"', attrs):
+                a = re.sub(r'\bid="\d+"', f'id="{nid}"', attrs, count=1)
+            else:
+                a = f' id="{nid}"' + attrs
+        out.append(f"<hp:p{a}>{inner_xml}</hp:p>")
+    return out
+
+
+def split_newline_paragraphs(hwpx_path) -> dict:
+    """본문의 '\n' 포함 문단을 줄별 개별 문단으로 분리. 반환 {ok, paras_split, paras_added}."""
+    path = str(hwpx_path)
+    try:
+        with zipfile.ZipFile(path) as z:
+            infos = z.infolist()
+            blobs = {zi.filename: z.read(zi.filename) for zi in infos}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": f"open: {exc}"}
+
+    total_split = 0
+    total_added = 0
+    for name in list(blobs):
+        if not re.search(r"section\d+\.xml$", name):
+            continue
+        x = blobs[name].decode("utf-8")
+        cell_spans = _tc_spans(x)
+
+        def _in_cell(p: int) -> bool:
+            for s, e in cell_spans:
+                if s <= p < e:
+                    return True
+                if s > p:
+                    break
+            return False
+
+        existing = [int(i) for i in re.findall(r'<hp:p\b[^>]*\bid="(\d+)"', x)]
+        next_id = [(max(existing) + 1) if existing else 1]
+        edits: list[tuple] = []  # (start, end, replacement)
+        for om in re.finditer(r"<hp:p\b([^>]*)>", x):
+            attrs = om.group(1)
+            open_end = om.end()
+            close = x.find("</hp:p>", open_end)
+            if close == -1:
+                continue
+            body = x[open_end:close]
+            # 중첩/복합 문단(표·그림·구역속성·다른 문단 포함)은 분리 대상에서 제외
+            if ("<hp:p" in body or "<hp:tbl" in body or "<hp:secPr" in body
+                    or "<hp:pic" in body or "<hp:container" in body):
+                continue
+            if "\n" not in body:
+                continue
+            if _in_cell(om.start()):
+                continue
+            if not any("\n" in t for t in
+                       re.findall(r"<hp:t\b[^>]*>(.*?)</hp:t>", body, re.S)):
+                continue
+            parts = _split_para_by_newline(attrs, body, next_id)
+            if len(parts) <= 1:
+                continue
+            edits.append((om.start(), close + len("</hp:p>"), "".join(parts)))
+            total_split += 1
+            total_added += len(parts) - 1
+
+        for s, e, rep in reversed(edits):
+            x = x[:s] + rep + x[e:]
+        blobs[name] = x.encode("utf-8")
+
+    if total_split == 0:
+        return {"ok": True, "paras_split": 0, "paras_added": 0}
+
+    tmp = path + ".tmpsplit"
+    try:
+        with zipfile.ZipFile(tmp, "w") as zf:
+            for zi in infos:
+                zf.writestr(zi, blobs[zi.filename])
+        os.replace(tmp, path)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            os.path.exists(tmp) and os.remove(tmp)
+        except OSError:
+            pass
+        return {"ok": False, "reason": f"write: {exc}"}
+    return {"ok": True, "paras_split": total_split, "paras_added": total_added}
+
+
 def apply_hanging_indent(hwpx_path, *, body_pt: int = 12) -> dict:
     """본문 개조식 문단에 마커 폭 기준 내어쓰기(hanging indent)를 적용한다.
 
@@ -1023,6 +1389,286 @@ def _host_para_of(tbl_el):
     while el is not None and not el.tag.endswith("}p"):
         el = el.getparent()
     return el
+
+
+_HP_NS_TBL = "http://www.hancom.co.kr/hwpml/2011/paragraph"
+
+
+def _q_hp(tag: str) -> str:
+    return f"{{{_HP_NS_TBL}}}{tag}"
+
+
+def _md_cell_clean(v: str) -> str:
+    """마크다운 셀 텍스트 정리: **굵게**·__밑줄__ 마커 제거, 앞뒤 공백 정리."""
+    v = re.sub(r"\*\*(.+?)\*\*", r"\1", v)
+    v = re.sub(r"__(.+?)__", r"\1", v)
+    return v.strip()
+
+
+def _norm_hdr(s: str) -> str:
+    """헤더 비교용 정규화: 한글·영숫자만 남기고 소문자화(첨자·공백·기호 제거)."""
+    return re.sub(r"[^0-9a-z가-힣]", "", (s or "").lower())
+
+
+def _tc_addr(tc) -> tuple[int, int]:
+    ca = tc.find(_q_hp("cellAddr"))
+    if ca is None:
+        return (0, 0)
+    return (int(ca.get("rowAddr", "0")), int(ca.get("colAddr", "0")))
+
+
+def _tc_text(tc) -> str:
+    return "".join(t.text or "" for t in tc.iter() if t.tag.endswith("}t"))
+
+
+def _table_rows_map(tbl_el) -> dict:
+    """{rowAddr: [tc,…]} — cellAddr 기준."""
+    by_row: dict = {}
+    for tc in tbl_el.iter(_q_hp("tc")):
+        r, _c = _tc_addr(tc)
+        by_row.setdefault(r, []).append(tc)
+    return by_row
+
+
+def _is_empty_template_table(tbl_el) -> bool:
+    """셀 대부분이 비어 있으면(헤더·행번호만 있는 빈 양식) True.
+
+    데이터 행 첫 칸에 '1.'·'2.' 같은 행번호만 있는 양식도 '빈 표'로 보도록 행 단위가
+    아니라 셀 단위 공백 비율로 판정한다(채워진 표는 대부분 셀에 내용이 있어 False)."""
+    cells = [tc for tc in tbl_el.iter(_q_hp("tc"))]
+    if not cells:
+        return False
+    empty = sum(1 for tc in cells if not _tc_text(tc).strip())
+    return empty / len(cells) >= 0.5
+
+
+def _header_similarity(md_header: list[str], tbl_el) -> float:
+    """md 헤더 토큰이 템플릿 표 상단행(rowAddr==0) 텍스트에 얼마나 포함되는지(0~1)."""
+    by_row = _table_rows_map(tbl_el)
+    top = by_row.get(min(by_row), []) if by_row else []
+    tmpl_blob = _norm_hdr(" ".join(_tc_text(tc) for tc in top))
+    toks = [_norm_hdr(h) for h in md_header if _norm_hdr(h)]
+    if not toks:
+        return 0.0
+    hit = sum(1 for t in toks if t and t in tmpl_blob)
+    return hit / len(toks)
+
+
+def _find_pair_template_table(secel, md_p, md_header: list[str], *, window: int = 6):
+    """md_p 이후 최상위 요소를 훑어(텍스트 문단은 건너뜀) '비었고 헤더가 유사한' 템플릿
+    표를 찾는다. (tbl_el, host_p) 또는 (None, None)."""
+    top = [c for c in list(secel)]
+    try:
+        start = top.index(md_p)
+    except ValueError:
+        return None, None
+    seen = 0
+    for el in top[start + 1:]:
+        if not el.tag.endswith("}p"):
+            continue
+        seen += 1
+        if seen > window:
+            break
+        tbl = next((e for e in el.iter() if e.tag.endswith("}tbl")), None)
+        if tbl is None:
+            # 텍스트 문단은 건너뛰되, 그림/표 아닌 문단만 window 로 카운트
+            continue
+        if not _is_empty_template_table(tbl):
+            return None, None  # 다음 표가 이미 채워진 표면 페어링 안 함(안전)
+        if _header_similarity(md_header, tbl) >= 0.4:
+            return tbl, el
+        return None, None  # 헤더가 안 맞으면 페어링 안 함
+    return None, None
+
+
+def _build_table_like(doc, si: int, md_rows: list[list[str]], tmpl_tbl_el):
+    """md_rows 구조(행×열)의 표를 새로 만들되, 템플릿 표의 셀 스타일(borderFill)을 이식.
+
+    글꼴·가운데정렬·폭맞춤은 뒤따르는 apply_fonts/apply_table_layout 가 덮으므로, 여기서는
+    테두리·헤더 음영(borderFillIDRef)과 표 구조만 템플릿을 따른다."""
+    from collections import Counter
+
+    by_row = _table_rows_map(tmpl_tbl_el)
+
+    def _common_bf(tcs):
+        cc = Counter(tc.get("borderFillIDRef") for tc in tcs
+                     if tc.get("borderFillIDRef"))
+        return cc.most_common(1)[0][0] if cc else None
+
+    header_bf = _common_bf(by_row.get(min(by_row), [])) if by_row else None
+    body_bf = _common_bf(by_row.get(max(by_row), [])) if by_row else None
+    tbl_bf = tmpl_tbl_el.get("borderFillIDRef")
+
+    nrows = len(md_rows)
+    ncols = max(len(r) for r in md_rows)
+    tbl = doc.add_table(nrows, ncols, section_index=si)
+    te = tbl.element
+    if tbl_bf:
+        te.set("borderFillIDRef", tbl_bf)
+    for tc in te.iter(_q_hp("tc")):
+        r, _c = _tc_addr(tc)
+        bf = header_bf if r == 0 else body_bf
+        if bf:
+            tc.set("borderFillIDRef", bf)
+    for r, row in enumerate(md_rows):
+        for c in range(ncols):
+            val = _md_cell_clean(row[c]) if c < len(row) else ""
+            try:
+                tbl.set_cell_text(r, c, val)
+            except Exception:  # noqa: BLE001
+                pass
+    return _host_para_of(te)
+
+
+# ── KEIT 폼 시그니처(정량 목표·연구비 비목 등) ─────────────────────────────────
+# md 표(AI 생성)와 기존 템플릿 표는 헤더 '문구'가 달라 토큰이 겹치지 않으므로(예 '평가항목'
+# vs '성과지표', '내부인건비' vs '수정인건비'), 폼별로 md/tmpl 시그니처를 따로 둔다. 각 폼은
+# 토큰 '그룹' 리스트이고, 매칭은 "모든 그룹에서 최소 한 토큰이 블롭에 포함"(그룹 내부는 동의어 OR).
+_KEIT_FORMS = [
+    {  # (a) 연구개발성과 성능목표(주요성능 Spec, 세계최고수준·비중 열)
+        "key": "perf_spec",
+        "md": [("평가항목", "주요성능"), ("세계최고",), ("비중", "가중치")],
+        "tmpl": [("평가항목", "주요성능"), ("세계최고",)],
+    },
+    {  # (b) 정량적 목표 항목의 평가방법 및 평가환경
+        "key": "eval_env",
+        "md": [("평가방법",), ("평가환경",)],
+        "tmpl": [("평가방법",), ("평가환경",)],
+    },
+    {  # (c) 성과지표(연도·성과지표명·목표·가중치)
+        "key": "perf_index",
+        "md": [("성과지표",), ("가중치",)],
+        "tmpl": [("성과지표",), ("가중치",)],
+    },
+    {  # (d) 연구비 비목별 사용계획 총괄·세부 표(연구비 내역)
+        "key": "budget",
+        "md": [("직접비",), ("인건비",), ("간접비", "연구개발비총액", "비목")],
+        "tmpl": [("비목", "수정인건비"), ("인건비", "직접비"),
+                 ("연구개발비총액", "합계", "1단계")],
+    },
+]
+
+
+def _is_guide_table(tbl_el) -> bool:
+    """'작성 요령'(제출 시 삭제) 예시·안내 표인지."""
+    return "작성요령" in _norm_blob_of_table(tbl_el)
+
+
+def _norm_blob_of_rows(md_rows: list) -> str:
+    return _norm_hdr(" ".join(str(c) for row in md_rows for c in row))
+
+
+def _norm_blob_of_table(tbl_el) -> str:
+    return _norm_hdr(" ".join(_tc_text(tc) for tc in tbl_el.iter(_q_hp("tc"))))
+
+
+def _match_groups(blob: str, groups) -> bool:
+    return all(any(tok in blob for tok in grp) for grp in groups)
+
+
+def _form_of_md(md_rows: list) -> dict | None:
+    """md 표 전체 블롭으로 KEIT 폼 종류를 판별(없으면 None)."""
+    blob = _norm_blob_of_rows(md_rows)
+    for form in _KEIT_FORMS:
+        if _match_groups(blob, form["md"]):
+            return form
+    return None
+
+
+def _find_form_template(secel, md_p, form: dict, used: set):
+    """같은 섹션에서 form 시그니처와 일치하는 템플릿 표를, md_p 에 가장 가까운 것으로 찾는다.
+
+    (tbl_el, host_p) 또는 (None, None). 이미 흡수된(used) host 는 제외. 위치는 md_p 뒤를
+    우선하되, 없으면 앞쪽에서 가장 가까운 것."""
+    top = [c for c in list(secel) if c.tag.endswith("}p")]
+    try:
+        mi = top.index(md_p)
+    except ValueError:
+        mi = len(top)
+    after, before = [], []
+    for i, el in enumerate(top):
+        if el is md_p or el in used:
+            continue
+        tbl = next((e for e in el.iter() if e.tag.endswith("}tbl")), None)
+        if tbl is None:
+            continue
+        if _is_guide_table(tbl):        # '작성 요령' 예시 표는 흡수 대상 아님
+            continue
+        if not _match_groups(_norm_blob_of_table(tbl), form["tmpl"]):
+            continue
+        (after if i > mi else before).append((abs(i - mi), tbl, el))
+    cand = sorted(after) or sorted(before)
+    if cand:
+        _d, tbl, el = cand[0]
+        return tbl, el
+    return None, None
+
+
+def fill_template_tables_from_markdown(hwpx_path, *, max_rows: int = 200) -> dict:
+    """본문의 마크다운 표를, 그 뒤에 있는 '빈 템플릿 표'에 재구성해 채운다(양식 유지).
+
+    - md 표 문단 뒤(텍스트 문단은 건너뜀)에서 헤더가 유사한 빈 표를 찾아 페어링.
+    - 페어링되면 md 구조(행×열)로 표를 다시 만들되 템플릿 셀 스타일을 이식하고, md 문단
+      자리에 넣은 뒤 md 문단과 원래 빈 템플릿 표를 제거(중복 제거).
+    - 페어링 안 되는 md 표는 손대지 않는다 → 뒤이어 apply_markdown_tables 가 새 표로 변환.
+    반환 {ok, filled, reason?}.
+    """
+    try:
+        doc = open_hwpx(hwpx_path)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": f"open: {exc}"}
+
+    filled = 0
+    try:
+        for si, sec in enumerate(doc.sections):
+            secel = sec.element
+            used: set = set()   # 이미 흡수한 템플릿 host(시그니처 페어링 중복 방지)
+            for p in [c for c in list(secel) if c.tag.endswith("}p")]:
+                if p.getparent() is None:      # 이미 제거됨
+                    continue
+                if _has_table_el(p):
+                    continue
+                text = _p_text_el(p)
+                if text.count("|") < 4:
+                    continue
+                blocks = _md_blocks(text)
+                tbls = [b for b in blocks if b[0] == "table"]
+                # 표 하나만 있고, 그 밖 실질 텍스트가 없는 순수 표 문단만 페어링 대상
+                nontrivial_text = any(
+                    b[0] == "text" and b[1].strip() for b in blocks)
+                if len(tbls) != 1 or nontrivial_text:
+                    continue
+                md_rows = tbls[0][1][:max_rows]
+                if len(md_rows) < 2:
+                    continue
+                # (1) KEIT 폼 시그니처 페어링(내용 기반, 정확) → (2) 실패 시 기존 '빈-인접
+                #     표' 페어링(하위호환). 분류된 폼은 시그니처가 올바른 템플릿을 집는다.
+                tmpl_tbl = tmpl_host = None
+                form = _form_of_md(md_rows)
+                if form is not None:
+                    tmpl_tbl, tmpl_host = _find_form_template(
+                        secel, p, form, used)
+                if tmpl_tbl is None:
+                    tmpl_tbl, tmpl_host = _find_pair_template_table(
+                        secel, p, md_rows[0])
+                if tmpl_tbl is None:
+                    continue
+                new_host = _build_table_like(doc, si, md_rows, tmpl_tbl)
+                if new_host is None:
+                    continue
+                # md 문단 자리에 새 표 삽입 → md 문단·원 템플릿 표 제거
+                if new_host.getparent() is not None:
+                    new_host.getparent().remove(new_host)
+                p.addnext(new_host)
+                secel.remove(p)
+                if tmpl_host.getparent() is not None:
+                    secel.remove(tmpl_host)
+                used.add(tmpl_host)
+                filled += 1
+        save_hwpx(doc, hwpx_path)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": f"fill: {exc}"}
+    return {"ok": True, "filled": filled}
 
 
 def apply_markdown_tables(hwpx_path, *, max_rows: int = 200, max_cols: int = 20) -> dict:

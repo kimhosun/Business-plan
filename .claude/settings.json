@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(python tools/*)",
-      "Bash(hwp5proc:*)"
+      "Bash(hwp5proc:*)",
+      "Bash(git commit *)",
+      "Edit(/.claude/skills/hwpx-yaml-roundtrip/**)",
+      "Bash(export PYTHONIOENCODING=utf-8)"
     ]
   }
 }

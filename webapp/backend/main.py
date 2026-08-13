@@ -326,6 +326,42 @@ async def put_table_formulas(pid: str, nid: str, body: dict = Body(...)):
     return tables.save_formulas(pid, nid, (body or {}).get("formulas") or {})
 
 
+@app.post("/api/projects/{pid}/nodes/{nid}/tables/ai-fill")
+async def tables_ai_fill(pid: str, nid: str, body: dict = Body(...)):
+    """표 한 개의 '빈 칸'만 Claude 로 채울 값을 제안한다(저장하지 않음 — 프런트가 검토 후 저장).
+
+    body {table_index, instruction}. 반환 {edits:[{paths,text,row,col}]} — 빈 셀만."""
+    _require_project(pid)
+    data = tables.tables_for(pid, nid)
+    tbls = data.get("tables") or []
+    ti = int((body or {}).get("table_index", -1))
+    if ti < 0 or ti >= len(tbls):
+        raise HTTPException(status_code=400, detail="table_index 가 범위를 벗어났습니다.")
+    cells = tbls[ti].get("cells") or []
+    empty: list[dict] = []
+    paths_by: dict[tuple, list] = {}
+    grid_lines: list[str] = []
+    for c in sorted(cells, key=lambda x: (x["row"], x["col"])):
+        txt = (c.get("text") or "").strip()
+        grid_lines.append(f"r{c['row']}\tc{c['col']}\t{txt}")
+        paths_by[(c["row"], c["col"])] = c["paths"]
+        if not txt:
+            empty.append({"row": c["row"], "col": c["col"]})
+    if not empty:
+        return {"edits": [], "reason": "빈 칸 없음"}
+    ctx = [f"[절] {data.get('label', '')} {data.get('title', '')}", store.read_overview(pid)]
+    rfp_text = store.read_rfp_text(pid)
+    if rfp_text:
+        ctx.append("[RFP]\n" + rfp_text[:3000])
+    proposed = claude_service.table_ai_fill(
+        "\n".join(p for p in ctx if (p or "").strip()),
+        "\n".join(grid_lines), empty, (body or {}).get("instruction", ""))
+    edits = [{"paths": paths_by[(c["row"], c["col"])], "text": c["text"],
+              "row": c["row"], "col": c["col"]}
+             for c in proposed if (c["row"], c["col"]) in paths_by]
+    return {"edits": edits, "empty": len(empty)}
+
+
 @app.put("/api/projects/{pid}/nodes/{nid}/input")
 async def put_input(pid: str, nid: str, body: InputBody):
     _require_project(pid)
@@ -606,6 +642,41 @@ def _sync_budget_detail(pid: str) -> dict:
     return {"changed": True, "institutions": n, **(info or {})}
 
 
+@app.post("/api/projects/{pid}/budget/sync-usage")
+def budget_sync_usage(pid: str):
+    """8-2 비목별 사용계획 총괄표(표1)를 참여기관 수만큼 복제/제거 후, 각 총괄표에
+    기관별 연차별 연구개발비 총액을 채운다.
+
+    구조편집(순수복원→표 XML 조작→재추출)이라 수십 초 걸릴 수 있어 별도 버튼으로 호출한다.
+    하위표(인건비·학생인건비·참고자료)는 문서마다 구성이 불규칙해 복제 대상에서 제외한다
+    (필요 값은 표별 AI 채움/수기로 입력)."""
+    _require_project(pid)
+    rebuilt = None
+    try:
+        rebuilt = _sync_budget_usage(pid)
+    except Exception as exc:  # noqa: BLE001 - 실패 시 원상복구됨(_apply_structural)
+        raise HTTPException(status_code=500, detail=f"8.2 표 재구성 실패: {exc}") from exc
+    applied = doc_fill.apply(pid)
+    return {"rebuilt": rebuilt, "applied": applied}
+
+
+def _sync_budget_usage(pid: str) -> dict:
+    """8-2 비목 총괄표(26×11) 개수 = 이름 있는 참여기관 수. 단일-host 복제/제거
+    (`rebuild_budget_detail`, 8-3 세부표와 동일 경로)를 재사용한다."""
+    ov = store.read_overview_data(pid)
+    n = len([i for i in (ov.get("institutions") or []) if (i.get("name") or "").strip()])
+    if n <= 0:
+        return {"changed": False, "reason": "참여기관 없음"}
+    index = pipeline._all_nodes_by_path(pid)
+    paths = doc_fill.usage_bimok_paths(pid, index)
+    if not paths:
+        return {"changed": False, "reason": "8.2 총괄표 없음"}
+    if len(paths) == n:
+        return {"changed": False, "reason": "이미 일치", "count": n}
+    info = tables.rebuild_budget_detail(pid, n, paths)
+    return {"changed": True, "institutions": n, **(info or {})}
+
+
 # ── 표지 자동채움: RFP 추출 / 기술분류 AI 제안 ───────────────────────────────
 @app.post("/api/projects/{pid}/cover/autofill-rfp")
 def cover_autofill_rfp(pid: str):
@@ -648,8 +719,10 @@ def suggest_summary(pid: str):
     _require_project(pid)
     ov = store.read_overview_data(pid)
     cov = ov.get("cover") or {}
-    years = [(p.get("year") or "").strip() for p in (ov.get("periods") or [])
-             if (p.get("year") or "").strip()]
+    # 연차 라벨은 프런트(ovPeriodLabel)·저장 키와 동일하게 '단계+차년도' 전체 라벨을 쓴다.
+    # (차년도만 쓰면 다단계 과제에서 '1차년도'가 중복되고, 프런트 매칭이 실패해 채워지지 않음.)
+    years = [lbl for p in (ov.get("periods") or [])
+             if (lbl := doc_fill._period_label(p))]
     parts = [cov.get("title_ko") or "", cov.get("master_title_ko") or "", store.read_overview(pid)]
     rfp_text = store.read_rfp_text(pid)
     if rfp_text:

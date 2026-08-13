@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>연구개발계획서 작성 웹서비스</title>
-  <link rel="stylesheet" href="styles.css?v=20260810d" />
+  <link rel="stylesheet" href="styles.css?v=20260812c" />
 </head>
 <body>
   <!-- 상단바 -->
@@ -195,32 +195,39 @@
             <div id="tables-grids" class="tables-grids"></div>
             <hr class="tables-sep" />
           </div>
-          <label class="field-label" for="input-text">사용자 원문 입력</label>
-          <textarea id="input-text" rows="14"
-                    placeholder="변환할 원문을 입력하세요. 아래 채팅으로 AI에게 작성을 맡길 수도 있습니다."></textarea>
-          <div class="row">
-            <button id="btn-input-save" class="btn btn-primary">저장</button>
-            <span class="hint">아래 채팅에서 지시하면 이 칸의 본문을 AI가 다시 씁니다.</span>
-          </div>
+          <!-- 좌: 내용(원문 입력) · 우: AI 대화 작성 -->
+          <div class="input-split">
+            <div class="input-col-main">
+              <label class="field-label" for="input-text">사용자 원문 입력</label>
+              <textarea id="input-text" rows="14"
+                        placeholder="변환할 원문을 입력하세요. 오른쪽 채팅으로 AI에게 작성을 맡길 수도 있습니다."></textarea>
+              <div class="row">
+                <button id="btn-input-save" class="btn btn-primary">저장</button>
+                <span class="hint">오른쪽 채팅에서 지시하면 이 칸의 본문을 AI가 다시 씁니다.</span>
+              </div>
+            </div>
 
-          <!-- 작성 채팅 (Claude) -->
-          <div class="chat-box">
-            <div class="chat-head">
-              <span>AI와 대화하며 작성</span>
-              <button id="btn-chat-clear" class="btn-icon" title="대화 초기화">🗑</button>
+            <!-- 작성 채팅 (Claude) -->
+            <div class="input-col-chat">
+              <div class="chat-box">
+                <div class="chat-head">
+                  <span>AI와 대화하며 작성</span>
+                  <button id="btn-chat-clear" class="btn-icon" title="대화 초기화">🗑</button>
+                </div>
+                <div id="chat-log" class="chat-log">
+                  <p class="placeholder">양식·작성요령·문체를 참고해 왼쪽 본문을 대신 써 드립니다. 재료나 수정 지시를 적어 보세요.</p>
+                </div>
+                <div class="chat-input-row">
+                  <textarea id="chat-input" rows="2"
+                            placeholder="예) 우리 과제는 LCO2 탱크 단열재 국산화다. 1-1 개요를 이 양식대로 써줘. (Enter 전송 · Shift+Enter 줄바꿈)"></textarea>
+                  <button id="btn-chat-send" class="btn btn-primary">전송</button>
+                </div>
+                <label class="chat-apply">
+                  <input type="checkbox" id="chat-apply" checked />
+                  답변을 왼쪽 입력칸에 자동 반영·저장
+                </label>
+              </div>
             </div>
-            <div id="chat-log" class="chat-log">
-              <p class="placeholder">양식·작성요령·문체를 참고해 위 본문을 대신 써 드립니다. 재료나 수정 지시를 적어 보세요.</p>
-            </div>
-            <div class="chat-input-row">
-              <textarea id="chat-input" rows="2"
-                        placeholder="예) 우리 과제는 LCO2 탱크 단열재 국산화다. 1-1 개요를 이 양식대로 써줘. (Enter 전송 · Shift+Enter 줄바꿈)"></textarea>
-              <button id="btn-chat-send" class="btn btn-primary">전송</button>
-            </div>
-            <label class="chat-apply">
-              <input type="checkbox" id="chat-apply" checked />
-              답변을 위 입력칸에 자동 반영·저장
-            </label>
           </div>
         </div>
 
@@ -276,6 +283,8 @@
                     title="8.1 지원·부담계획 표를 현재 단계 수에 맞춰 자동 재구성하고 채웁니다(구조 변경, 수십 초 소요)">8.1 표 단계 반영</button>
             <button id="btn-detail-sync" class="btn-mini2" type="button"
                     title="8장 비목별 세부 사용계획 표를 참여기관 수만큼 복제하고 연구개발비 총액을 채웁니다(구조 변경, 수십 초 소요)">8장 세부표 기관수 반영</button>
+            <button id="btn-usage-sync" class="btn-mini2" type="button"
+                    title="8.2 비목별 사용계획 총괄표(표1)를 참여기관 수만큼 복제·정리하고, 각 총괄표에 기관별 연차별 연구개발비 총액을 채웁니다(구조 변경, 수십 초 소요). 하위표(인건비·학생인건비)는 표별 AI로 채우세요.">8.2 총괄표 기관·연차 반영</button>
           </div>
           <div class="ovm-hint-inline">참여기관·연차를 입력하면 자동 생성 · 표지 정부지원비 및 8.1 표에 반영</div>
           <div id="fund-grid-wrap" class="fund-grid-wrap"></div>
@@ -402,6 +411,6 @@
   <!-- 토스트 -->
   <div id="toast" class="toast hidden"></div>
 
-  <script src="app.js?v=20260811n"></script>
+  <script src="app.js?v=20260812c"></script>
 </body>
 </html>

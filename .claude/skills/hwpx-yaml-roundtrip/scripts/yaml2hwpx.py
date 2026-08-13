@@ -42,6 +42,9 @@ from hwpx_common import (  # noqa: E402
     apply_hanging_indent,
     apply_markdown_tables,
     apply_markdown_images,
+    apply_verify_marks,
+    split_newline_paragraphs,
+    fill_template_tables_from_markdown,
 )
 
 
@@ -146,6 +149,14 @@ def restore(hwpx: str, yaml_dir: str, out: str, template: str | None = None) -> 
 
     # 마크다운 표(| a | b |) → 실제 HWPX 표 (글꼴 적용 전에 먼저 — 새 셀도 8pt 적용되게).
     if os.environ.get("HWPX_MD_TABLES", "0") not in ("0", "false", "False", ""):
+        # 먼저: md 표를 그 뒤의 '빈 템플릿 표'에 재구성해 채운다(양식 유지, 중복 제거).
+        # 페어링 안 되는 md 표만 아래 apply_markdown_tables 가 새 표로 만든다.
+        if os.environ.get("HWPX_FILL_TEMPLATES", "1") not in ("0", "false", "False", ""):
+            ft = fill_template_tables_from_markdown(out)
+            if ft.get("ok") and ft.get("filled"):
+                print(f"[yaml2hwpx] template tables filled from markdown: {ft.get('filled')}개")
+            elif not ft.get("ok"):
+                print(f"[yaml2hwpx] template fill skipped: {ft.get('reason')}")
         mt = apply_markdown_tables(out)
         if mt.get("ok"):
             print(f"[yaml2hwpx] markdown tables -> hwpx tables: {mt.get('tables')}")
@@ -194,6 +205,14 @@ def restore(hwpx: str, yaml_dir: str, out: str, template: str | None = None) -> 
 
     # 개조식 내어쓰기(마커 폭 기준 hanging indent) — 본문 문단에 적용(기본 OFF, 웹앱이 켬).
     if os.environ.get("HWPX_HANGING_INDENT", "0") not in ("0", "false", "False", ""):
+        # 먼저 '\n' 로 여러 줄이 몰린 개조식 문단을 줄별 개별 문단으로 분리 → 각 줄이
+        # 단일 마커 문단이 되어 아래 내어쓰기가 마커별로 정확히 정렬된다.
+        sp = split_newline_paragraphs(out)
+        if sp.get("ok") and sp.get("paras_split"):
+            print(f"[yaml2hwpx] newline paragraphs split: {sp.get('paras_split')}문단 "
+                  f"→ +{sp.get('paras_added')}줄")
+        elif not sp.get("ok"):
+            print(f"[yaml2hwpx] newline split skipped: {sp.get('reason')}")
         try:
             hpt = int(os.environ.get("HWPX_BODY_PT", "12"))
         except ValueError:
@@ -204,6 +223,17 @@ def restore(hwpx: str, yaml_dir: str, out: str, template: str | None = None) -> 
                   f"(paraPr +{hi.get('parapr_added')})")
         else:
             print(f"[yaml2hwpx] hanging indent skipped: {hi.get('reason')}")
+
+    # 확인 필요 구간([[확인]]…[[/확인]]) → 글자색 빨강 + 마커 제거 (색만 덮으므로 맨 마지막).
+    if os.environ.get("HWPX_VERIFY_MARKS", "0") not in ("0", "false", "False", ""):
+        vc = os.environ.get("HWPX_VERIFY_COLOR", "#FF0000")
+        vm = apply_verify_marks(out, color=vc)
+        if vm.get("ok"):
+            if vm.get("runs_changed"):
+                print(f"[yaml2hwpx] verify marks applied: 빨강 run {vm.get('runs_changed')}개 "
+                      f"(charPr 변형 {vm.get('marks')}종)")
+        else:
+            print(f"[yaml2hwpx] verify marks skipped: {vm.get('reason')}")
 
     size = os.path.getsize(out)
     print(f"[yaml2hwpx] nodes written: {written}, skipped(unchanged): {skipped}, "

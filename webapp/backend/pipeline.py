@@ -92,7 +92,8 @@ def restore(
     if pure:
         # 순수 왕복(구조편집용): 문단 이동을 유발하는 후처리를 모두 끈다.
         for _k in ("HWPX_APPLY_FONTS", "HWPX_TABLE_LAYOUT", "HWPX_COLLECT_SOURCES",
-                   "HWPX_HANGING_INDENT", "HWPX_MD_TABLES", "HWPX_MD_IMAGES"):
+                   "HWPX_HANGING_INDENT", "HWPX_MD_TABLES", "HWPX_MD_IMAGES",
+                   "HWPX_VERIFY_MARKS"):
             env[_k] = "0"
         _run(args, env=env)
         return str(out)
@@ -113,6 +114,8 @@ def restore(
     env.setdefault("HWPX_MD_TABLES", "1")
     # 마크다운 그림/차트(```chart · ![](url)) → 실제 HWPX 그림개체(+ <그림 N> 캡션)
     env.setdefault("HWPX_MD_IMAGES", "1")
+    # 확인 필요 구간([[확인]]…[[/확인]]) → 글자색 빨강 + 마커 제거
+    env.setdefault("HWPX_VERIFY_MARKS", "1")
     _run(args, env=env)
     return str(out)
 

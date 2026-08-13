@@ -127,6 +127,9 @@ const API = {
   summarySuggest: (pid) => api(`/api/projects/${pid}/summary/suggest`, { method: "POST" }),
   budgetSyncStages: (pid) => api(`/api/projects/${pid}/budget/sync-stages`, { method: "POST" }),
   budgetSyncDetail: (pid) => api(`/api/projects/${pid}/budget/sync-detail`, { method: "POST" }),
+  budgetSyncUsage: (pid) => api(`/api/projects/${pid}/budget/sync-usage`, { method: "POST" }),
+  tableAiFill: (pid, nid, table_index, instruction) =>
+    api(`/api/projects/${pid}/nodes/${nid}/tables/ai-fill`, postJson({ table_index, instruction })),
 };
 
 /* ------------------------------------------------------------------ */
@@ -993,18 +996,23 @@ function renderOverviewRef() {
 // ── 구조화 폼: 행(참여기관/정부출연금) 생성 ─────────────────────────────────
 const OV_ROLES = ["주관", "공동"];
 const OV_TYPES = ["비영리", "대기업", "중견기업", "중소기업", "대학", "출연연", "기타"];
+// 표지 참여기관 프리셋: 한국선급은 항상 첫 행으로 포함되며(고정·삭제불가), 주관/공동만 선택.
+const OV_MAIN_ORG = "한국선급";
 
-function ovMakeInst(inst = {}) {
+function ovMakeInst(inst = {}, pinned = false) {
   const opt = (arr, sel) =>
     arr.map((v) => `<option${v === sel ? " selected" : ""}>${v}</option>`).join("");
   const div = el("div", { class: "ov-card", "data-inst": "1" });
+  if (pinned) div.setAttribute("data-preset", "kr");
   div.innerHTML =
     `<div class="ov-card-row">` +
-    `<select class="ov-inst-role" title="구분">${opt(OV_ROLES, inst.role || "주관")}</select>` +
+    `<select class="ov-inst-role" title="구분(주관/공동)">${opt(OV_ROLES, inst.role || "주관")}</select>` +
     `<select class="ov-inst-type" title="기관형태">${opt(OV_TYPES, inst.type || "비영리")}</select>` +
-    `<button type="button" class="ov-del" title="이 기관 삭제">×</button>` +
+    (pinned
+      ? `<span class="ov-inst-pin" title="한국선급은 항상 포함되는 프리셋 기관입니다(삭제 불가, 주관/공동만 선택)">고정</span>`
+      : `<button type="button" class="ov-del" title="이 기관 삭제">×</button>`) +
     `</div>` +
-    `<input class="ov-inst-name ov-input" placeholder="기관명" />` +
+    `<input class="ov-inst-name ov-input" placeholder="기관명"${pinned ? " readonly" : ""} />` +
     `<input class="ov-inst-duty ov-input" placeholder="주요 담당 연구내용" />` +
     `<div class="ov-inst-lead">` +
     `<span class="ov-inst-lead-cap" title="주관기관 책임자는 표지의 '연구책임자'로, 공동기관 책임자는 '공동연구개발기관' 칸으로 들어갑니다">책임자</span>` +
@@ -1013,8 +1021,8 @@ function ovMakeInst(inst = {}) {
     `<input class="ov-inst-lead-mobile ov-input" placeholder="휴대전화" />` +
     `<input class="ov-inst-lead-email ov-input" placeholder="전자우편" />` +
     `</div>`;
-  // 사용자 값은 property 로 넣어 HTML 주입을 피한다.
-  div.querySelector(".ov-inst-name").value = inst.name || "";
+  // 사용자 값은 property 로 넣어 HTML 주입을 피한다. 고정행은 기관명을 한국선급으로 강제.
+  div.querySelector(".ov-inst-name").value = pinned ? OV_MAIN_ORG : (inst.name || "");
   div.querySelector(".ov-inst-duty").value = inst.duty || "";
   div.querySelector(".ov-inst-lead-name").value = inst.lead_name || "";
   div.querySelector(".ov-inst-lead-title").value = inst.lead_title || "";
@@ -1023,19 +1031,89 @@ function ovMakeInst(inst = {}) {
   return div;
 }
 
-// 연차별 연구기간 행: 단계 + 차년도 + 기간. 라벨은 "N단계 M차년도".
+// 참여기관 역할 규칙: 세트 안에 주관은 항상 정확히 1개.
+//  - 한국선급(프리셋, 첫 행)의 역할만 사용자가 선택(주관/공동).
+//  - 한국선급=주관 → 그 뒤 기관은 모두 공동.
+//  - 한국선급=공동 → 그 뒤 '첫 기관'이 주관, 나머지는 모두 공동.
+// 나머지 기관의 역할 select 는 비활성(자동 표시)해 규칙을 강제한다.
+function ovEnforceRoles() {
+  const cards = $$("#inst-list .ov-card");
+  if (!cards.length) return;
+  const kr = cards.find((c) => c.getAttribute("data-preset") === "kr") || cards[0];
+  const krSel = kr.querySelector(".ov-inst-role");
+  krSel.disabled = false;
+  const krCoop = (krSel.value || "주관") === "공동";
+  cards
+    .filter((c) => c !== kr)
+    .forEach((c, i) => {
+      const sel = c.querySelector(".ov-inst-role");
+      sel.value = krCoop && i === 0 ? "주관" : "공동";
+      sel.disabled = true;
+      sel.title = "역할은 한국선급(첫 행) 선택에 따라 자동 결정됩니다";
+    });
+}
+
+// 연차별 연구기간 행: 단계 + 차년도 + 기간(시작일·종료일 달력). 라벨은 "N단계 M차년도".
 function ovMakePeriod(p = {}, idx = 0) {
   const div = el("div", { class: "ov-prow", "data-period": "1" });
   div.innerHTML =
     `<input class="ov-period-stage ov-input ov-narrow3" placeholder="단계" title="단계(예: 1)" />` +
     `<input class="ov-period-year ov-input ov-narrow2" placeholder="차년도" title="차년도(예: 1차년도)" />` +
-    `<input class="ov-period-range ov-input" placeholder="예: 2026.10~2027.09" />` +
+    `<span class="ov-period-range">` +
+      `<input type="date" class="ov-period-start ov-input ov-date" title="시작일(달력에서 선택)" />` +
+      `<span class="ov-period-tilde">~</span>` +
+      `<input type="date" class="ov-period-end ov-input ov-date" title="종료일(시작일 선택 시 그해 말일 자동 · 수정 가능)" />` +
+    `</span>` +
     `<button type="button" class="ov-del" title="이 연차 삭제">×</button>`;
   // stage 는 로드 데이터에 없으면 빈 값(구 데이터 호환: 라벨=차년도). 새 행(+연차)은 "1" 로 만든다.
   div.querySelector(".ov-period-stage").value = p.stage || "";
   div.querySelector(".ov-period-year").value = p.year || `${idx + 1}차년도`;
-  div.querySelector(".ov-period-range").value = p.range || "";
+  // 저장된 range 문자열("2026.10.01 ~ 2026.12.31" 등)을 시작·종료 달력값(YYYY-MM-DD)으로 복원.
+  const [s, e] = ovParseRange(p.range);
+  div.querySelector(".ov-period-start").value = s;
+  const endEl = div.querySelector(".ov-period-end");
+  endEl.value = e;
+  if (e) endEl.dataset.auto = "";  // 로드된 종료일은 수동값으로 간주(자동 덮어쓰기 방지)
   return div;
+}
+
+// "2026-10-01" → "2026.10.01". 빈 값이면 "".
+function ovDateDot(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || "");
+  return m ? `${m[1]}.${m[2]}.${m[3]}` : "";
+}
+// 시작·종료 달력값(YYYY-MM-DD) → 저장·표시용 range 문자열("2026.10.01 ~ 2026.12.31").
+function ovComposeRange(startIso, endIso) {
+  const s = ovDateDot(startIso), e = ovDateDot(endIso);
+  if (s && e) return `${s} ~ ${e}`;
+  return s || e || "";
+}
+// "2026.10.01" · "2026.10" · "2026-10-01" 등 → 달력 입력용 ISO "YYYY-MM-DD"(월·일 없으면 01).
+function ovToIso(s) {
+  const m = /(\d{4})\D*(\d{1,2})?\D*(\d{1,2})?/.exec(String(s || ""));
+  if (!m) return "";
+  const mo = String(m[2] || "1").padStart(2, "0");
+  const d = String(m[3] || "1").padStart(2, "0");
+  return `${m[1]}-${mo}-${d}`;
+}
+// 저장된 range 문자열 → [시작 ISO, 종료 ISO]. best-effort.
+function ovParseRange(range) {
+  // 구분자는 ~ · en-dash · 공백으로 감싼 하이픈만(ISO/점표기 날짜 내부의 - 를 쪼개지 않도록)
+  const parts = String(range || "").split(/\s*[~–]\s*|\s+-\s+/).map((x) => x.trim()).filter(Boolean);
+  return [ovToIso(parts[0]), ovToIso(parts[1])];
+}
+// 시작일 선택 시: 종료일이 비었거나 자동값이면 그해 12월 31일로 자동 채움(수정 가능).
+function ovAutofillPeriodEnd(startEl) {
+  const row = startEl.closest(".ov-prow");
+  const endEl = row && row.querySelector(".ov-period-end");
+  if (!endEl) return;
+  const y = (startEl.value || "").slice(0, 4);
+  if (!/^\d{4}$/.test(y)) return;
+  const isAuto = "auto" in endEl.dataset;   // 이전에 자동으로 채운 값
+  if (!endEl.value || isAuto) {
+    endEl.value = `${y}-12-31`;
+    endEl.dataset.auto = "";  // 자동값 표식 → 이후 시작연도 바뀌면 다시 갱신
+  }
 }
 
 // 단계+차년도 → 표시/키 라벨. 예 "1단계 1차년도"(단계 없으면 차년도만).
@@ -1055,6 +1133,18 @@ let ovFundMap = {};
 const ovFundKey = (org, year) => `${org}${OV_SEP}${year}`;
 const ovNumOnly = (s) => (String(s == null ? "" : s).replace(/[^\d]/g, ""));
 const ovFmt = (n) => (n ? Number(n).toLocaleString("en-US") : "0");
+
+// 금액 입력칸에서 숫자 이외 문자를 즉시 제거(캐럿 위치 보정). 반환값=숫자만 문자열.
+function ovSanitizeNumField(inp) {
+  const before = String(inp.value || "");
+  const digits = before.replace(/[^\d]/g, "");
+  if (before === digits) return digits;
+  const caret = inp.selectionStart == null ? before.length : inp.selectionStart;
+  const kept = before.slice(0, caret).replace(/[^\d]/g, "").length; // 캐럿 앞 유효 숫자 수
+  inp.value = digits;
+  try { inp.setSelectionRange(kept, kept); } catch (_) {}
+  return digits;
+}
 
 // 현재 폼(DOM)의 참여기관명·연차 라벨(미저장 편집 반영, 빈 값 제외·중복 제거).
 function ovCurrentInstNames() {
@@ -1253,8 +1343,13 @@ function renderOverviewForm(data) {
   const instList = $("#inst-list");
   if (instList) {
     instList.innerHTML = "";
-    const insts = data.institutions || [];
-    (insts.length ? insts : [{}]).forEach((i) => instList.appendChild(ovMakeInst(i)));
+    // 한국선급을 첫 고정행으로(저장분에 있으면 그 값 유지, 없으면 프리셋 생성). 나머지는 뒤에.
+    const insts = (data.institutions || []).slice();
+    const krIdx = insts.findIndex((i) => (i.name || "").trim() === OV_MAIN_ORG);
+    const krData = krIdx >= 0 ? insts.splice(krIdx, 1)[0] : { role: "주관", type: "비영리" };
+    instList.appendChild(ovMakeInst(krData, true));
+    insts.forEach((i) => instList.appendChild(ovMakeInst(i)));
+    ovEnforceRoles();
   }
   const periodList = $("#period-list");
   if (periodList) {
@@ -1312,7 +1407,9 @@ function collectOverviewData() {
     .map((r) => ({
       stage: (r.querySelector(".ov-period-stage").value || "").trim(),
       year: (r.querySelector(".ov-period-year").value || "").trim(),
-      range: (r.querySelector(".ov-period-range").value || "").trim(),
+      range: ovComposeRange(
+        (r.querySelector(".ov-period-start") || {}).value,
+        (r.querySelector(".ov-period-end") || {}).value),
     }))
     .filter((p) => p.stage || p.year || p.range);
   // 정부출연금: 현재 그리드 값을 맵에 반영 후, 기관×연차 조합 중 금액 있는 것만.
@@ -1526,6 +1623,32 @@ async function budgetSyncDetail() {
   } catch (e) {
     toast("8장 세부표 재구성 실패: " + e.message, "err");
     setOverviewStatus("8장 세부표 재구성 실패: " + e.message, "err");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// 8.2 비목별 사용계획 총괄표(표1)를 참여기관 수만큼 복제/정리하고 기관별 연차별 총액을 채운다(구조편집).
+async function budgetSyncUsage() {
+  if (!state.pid) { toast("프로젝트를 먼저 열어 주세요.", "err"); return; }
+  const btn = $("#btn-usage-sync");
+  await saveOverview({ silent: true });
+  setOverviewStatus("8.2 총괄표 구조 재구성 중… (수십 초 소요, 표 구조 변경)", "busy");
+  if (btn) btn.disabled = true;
+  try {
+    const res = await API.budgetSyncUsage(state.pid);
+    const rb = res && res.rebuilt;
+    if (rb && rb.changed) {
+      toast(`8.2 비목 총괄표를 ${rb.institutions}개(기관 수)로 맞추고 연구개발비 총액을 채웠습니다.`, "ok");
+      setOverviewStatus(`8.2 총괄표 ${rb.institutions}개 반영 완료`, "ok");
+    } else {
+      const why = rb && rb.reason ? ` (${rb.reason})` : "";
+      toast("8.2 총괄표 개수가 이미 참여기관 수와 일치합니다(값은 갱신).", "ok");
+      setOverviewStatus("8.2 총괄표 일치 — 값 갱신" + why, "ok");
+    }
+  } catch (e) {
+    toast("8.2 총괄표 재구성 실패: " + e.message, "err");
+    setOverviewStatus("8.2 총괄표 재구성 실패: " + e.message, "err");
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -1917,9 +2040,53 @@ function renderTables(data) {
     const scroll = el("div", { class: "grid-scroll" });
     scroll.appendChild(table);
     host.appendChild(scroll);
+    host.appendChild(makeTableAiBox(ti));
     recalc(ti);   // 초기 수식 계산
   });
   $("#btn-tables-save").textContent = tablesState.dirty.size ? `표 저장 (${tablesState.dirty.size})` : "표 저장";
+}
+
+// 표별 AI 채움 박스: 지시문 입력 + 버튼. 이 표(ti)의 '빈 칸'에만 Claude 제안을 반영한다.
+function makeTableAiBox(ti) {
+  const row = el("div", { class: "tbl-ai-row" });
+  const ta = el("textarea", {
+    class: "tbl-ai-input", rows: "1", spellcheck: "false",
+    placeholder: `표 ${ti + 1} AI 채움 — 지시문(예: 이 표의 빈 칸을 과제 내용에 맞게 채워줘). 빈 칸만 채웁니다.`,
+  });
+  const btn = el("button", { class: "btn btn-secondary tbl-ai-btn", text: "AI 채우기", type: "button" });
+  btn.addEventListener("click", () => runTableAiFill(ti, ta.value, btn));
+  row.append(ta, btn);
+  return row;
+}
+
+async function runTableAiFill(ti, instruction, btn) {
+  if (!state.pid || !state.nid) { toast("절을 먼저 여세요.", "err"); return; }
+  const t = tablesState.data && tablesState.data.tables[ti];
+  if (!t) return;
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = "생성 중…";
+  try {
+    const res = await API.tableAiFill(state.pid, state.nid, ti, instruction || "");
+    const edits = (res && res.edits) || [];
+    let applied = 0;
+    edits.forEach((e) => {
+      // 이 표(ti)의 해당 anchor td 가 '실제로 비어 있을 때만' 반영(기존 값 보호).
+      const ap = (e.paths && e.paths[0]) || "";
+      // anchor path 는 [\w/] 만 포함 → 따옴표 속성선택자로 안전(이스케이프 불필요).
+      const td = ap && $(`#tables-grids td[data-ti="${ti}"][data-anchor="${ap}"]`);
+      if (td && !td.textContent.trim() && !tablesState.formulas.has(ap)) {
+        td.textContent = e.text;
+        markDirty(td, e.text);
+        applied++;
+      }
+    });
+    if (applied) toast(`AI가 표 ${ti + 1}의 빈 칸 ${applied}개를 채웠습니다. 검토 후 [표 저장]하세요.`, "ok");
+    else toast(`표 ${ti + 1}: 채울 빈 칸이 없거나 제안이 없습니다.`, "ok");
+  } catch (e) {
+    toast("표 AI 채움 실패: " + e.message, "err");
+  } finally {
+    btn.disabled = false; btn.textContent = label;
+  }
 }
 
 function gridKeydown(e) {
@@ -2012,6 +2179,7 @@ function bindEvents() {
   $("#btn-summary-suggest").addEventListener("click", summarySuggestAi);
   $("#btn-budget-sync").addEventListener("click", budgetSyncStages);
   $("#btn-detail-sync").addEventListener("click", budgetSyncDetail);
+  $("#btn-usage-sync").addEventListener("click", budgetSyncUsage);
   // 배경(오버레이) 클릭으로 닫기
   $("#overview-modal").addEventListener("mousedown", (e) => {
     if (e.target.id === "overview-modal") closeOverviewModal(true);
@@ -2023,6 +2191,7 @@ function bindEvents() {
   // 행 추가
   $("#btn-inst-add").addEventListener("click", () => {
     $("#inst-list").appendChild(ovMakeInst());
+    ovEnforceRoles();  // 새 기관 역할 자동 결정(한국선급=주관→공동 / 공동→첫 기관 주관)
   });
   $("#btn-period-add").addEventListener("click", () => {
     const n = $$("#period-list .ov-prow").length;
@@ -2040,21 +2209,33 @@ function bindEvents() {
     if (row) {
       const wasPeriod = row.classList.contains("ov-prow");
       row.remove();
+      if (!wasPeriod) ovEnforceRoles();  // 기관 삭제 시 주관 재배정(공동 세트일 때 첫 기관 승격)
       ovRebuildGrid();
       if (wasPeriod) ovRebuildSummary();
       saveOverview({ silent: true });
     }
   });
-  // 금액 셀 입력 중에는 합계만 즉시 갱신.
+  // 금액 셀 입력 중에는 숫자만 허용(비숫자 즉시 제거) + 합계만 즉시 갱신.
   modalBody.addEventListener("input", (e) => {
     if (e.target.classList.contains("fg-cell")) {
       const c = e.target;
-      ovFundMap[c.getAttribute("data-key")] = ovNumOnly(c.value);
+      ovFundMap[c.getAttribute("data-key")] = ovSanitizeNumField(c);
       ovRecalcTotals();
     }
   });
   // 참여기관명·연차 라벨을 확정(포커스 이탈)하면 그리드·연차별 요약칸을 재구성.
   modalBody.addEventListener("change", (e) => {
+    if (e.target.closest(".ov-inst-role")) {
+      ovEnforceRoles();  // 한국선급 역할 변경 → 나머지 기관 역할 자동 재배정
+    }
+    // 시작일 선택 → 종료일을 그해 말일(12/31)로 자동(빈 값·자동값일 때만, 수정 가능)
+    if (e.target.classList.contains("ov-period-start")) {
+      ovAutofillPeriodEnd(e.target);
+    }
+    // 종료일을 사람이 직접 고치면 자동 표식 해제(이후 시작일 변경에도 유지)
+    if (e.target.classList.contains("ov-period-end")) {
+      delete e.target.dataset.auto;
+    }
     if (e.target.closest(".ov-inst-name, .ov-period-year, .ov-period-stage")) {
       ovRebuildGrid();
     }

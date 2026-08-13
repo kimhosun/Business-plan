@@ -533,6 +533,16 @@ def _claude_generate_template(
     return parsed
 
 
+# 확인 필요 구간 마킹 규약(변환/채팅 공용). 빌드가 이 마커 구간을 글자색 빨강으로 바꾸고
+# 마커는 제거한다(HWPX_VERIFY_MARKS). 값 텍스트만 감싸고 선두 마커·문단 전체는 감싸지 않는다.
+_VERIFY_MARK_RULE = (
+    "사람이 검증해야 하는 값(제반사항·RFP·입력에 근거가 없는 실적 수치·기관 고유명사·"
+    "특허/등록번호·인명·날짜·금액·비율 등)은 지어내지 말고 그 값 부분만 "
+    "[[확인]]…[[/확인]] 로 감싼다(예: 매출 [[확인]]○○억원[[/확인]], "
+    "[[확인]]△△△ 확인 필요[[/확인]]). 마커는 값 텍스트에만 붙이고 선두 개조식 마커나 "
+    "문단 전체를 감싸지 않는다. 근거가 확실한 값에는 마커를 붙이지 않는다."
+)
+
 _CONVERT_SYSTEM = (
     "당신은 정부 R&D 연구개발계획서 한 절(節)을 작성하는 편집자다. "
     "아래 [제반사항]·[RFP 원문]·[사용자 입력]을 근거로, 지정된 [문체]·[구성]·[작성요령]에 맞춰 "
@@ -546,9 +556,10 @@ _CONVERT_SYSTEM = (
     "녹인다. 사용자 입력이 비었거나 부족하면 제반사항·RFP 근거로 이 절을 구체적으로 작성한다"
     "(빈 입력이라고 빈 결과를 내지 말 것).\n"
     "3) [문체]·[구성]·[작성요령]을 반드시 따른다(개조식·정량 표기 등).\n"
-    "4) 제반사항·RFP·입력에 없는 구체 수치는 지어내지 말고 [○○ 확인 필요] 로 남긴다.\n"
+    "4) " + _VERIFY_MARK_RULE + "\n"
     "5) 정확히 N개의 세그먼트로 나눈다. 출력은 길이 N 의 JSON 문자열 배열 하나뿐이다"
-    "(마커/번호는 넣지 말 것 — 번호는 후처리로 붙는다). 코드펜스 밖 설명 금지."
+    "(마커/번호는 넣지 말 것 — 번호는 후처리로 붙는다. 단 [[확인]]…[[/확인]] 는 예외로 유지). "
+    "코드펜스 밖 설명 금지."
 )
 
 # 변환 시 RFP 원문 컨텍스트 예산(글자수).
@@ -685,7 +696,7 @@ _CHAT_SYSTEM = (
     "근거로 반영한다(사용자 지시가 없어도 제반사항·RFP 기반으로 이 절을 구체화한다).\n"
     "2) [현재 작성본]이 있으면 처음부터 새로 쓰지 말고 지시한 부분만 고쳐 전체를 다시 낸다.\n"
     "3) 개조식·정량 표기를 기본으로 하며 근거 없는 수치를 지어내지 않는다. "
-    "값이 필요하면 draft 안에 [○○ 확인 필요] 같은 자리표시로 남기고 reply 에서 물어본다.\n"
+    + _VERIFY_MARK_RULE + " 그리고 reply 에서 무엇을 확인해야 하는지 물어본다.\n"
     "4) 출력은 ```json 코드펜스 안의 JSON 객체 하나뿐이다. 키는 두 개:\n"
     '   {"reply": "사용자에게 할 짧은 한국어 답변", '
     '"draft": "절 본문 전체(줄바꿈 포함). 본문을 고칠 필요가 없으면 null"}\n'
@@ -1225,12 +1236,14 @@ _SUMMARY_SUGGEST_SYSTEM = (
     "당신은 정부 R&D 연구개발계획서 '요약문'의 [연구개발 목표 및 내용]을 작성하는 편집자다. "
     "아래 [과제 내용](과제명·RFP·제반사항 등)을 근거로 (1) 최종목표, (2) 각 연차별 목표, "
     "(3) 각 연차별 개발내용을 제안한다.\n"
-    "규칙: 연차 라벨은 사용자가 준 [연차 목록]을 그대로 쓴다(목록에 있는 연차만). 각 목표·내용은 "
+    "규칙: 연차 라벨(year)은 아래 [연차 목록]의 문자열을 **글자 그대로(단계 표기 포함) 복사**해 쓴다. "
+    "임의로 줄이거나 바꾸지 말 것(예: 목록이 '1단계 1차년도'면 그대로, '1차년도'로 축약 금지). "
+    "goals·contents 는 [연차 목록]의 **모든 연차를 목록 순서대로 하나씩** 담는다. 각 목표·내용은 "
     "개조식으로 간결하게(1~3줄), RFP·과제 내용에 부합하게 작성한다. 근거 없는 구체 수치는 지어내지 "
     "말고 '[○○ 확인 필요]' 로 남긴다.\n"
     "출력은 **JSON 객체 하나만**: "
-    '{"goal_final": "...", "goals": [{"year":"1차년도","text":"..."}, ...], '
-    '"contents": [{"year":"1차년도","text":"..."}, ...]}. 코드펜스 밖 설명 금지.'
+    '{"goal_final": "...", "goals": [{"year":"<연차 목록의 라벨 그대로>","text":"..."}, ...], '
+    '"contents": [{"year":"<연차 목록의 라벨 그대로>","text":"..."}, ...]}. 코드펜스 밖 설명 금지.'
 )
 
 
@@ -1262,10 +1275,31 @@ def summary_suggest(context_text: str, years: list[str] | None = None) -> dict:
                     out.append({"year": y, "text": t})
         return out
 
+    yrs = [y for y in (years or []) if y]
+
+    def _align(lst) -> list[dict]:
+        """모델이 연차 라벨을 축약/변형해도 프런트·저장 키(=전체 라벨)에 맞춘다.
+        개수가 [연차 목록]과 같으면 **순서대로 매핑**(가장 신뢰), 아니면 정확일치→유일한 접미사일치."""
+        items = _norm(lst)
+        if not yrs:
+            return items
+        if len(items) == len(yrs):
+            return [{"year": yrs[i], "text": items[i]["text"]} for i in range(len(items))]
+        out = []
+        for it in items:
+            y = it["year"]
+            match = y if y in yrs else None
+            if match is None:
+                cands = [c for c in yrs if c == y or c.endswith(" " + y) or c.endswith(y)]
+                if len(cands) == 1:
+                    match = cands[0]
+            out.append({"year": match or y, "text": it["text"]})
+        return out
+
     return {
         "goal_final": str(obj.get("goal_final", "") or "").strip(),
-        "goals": _norm(obj.get("goals")),
-        "contents": _norm(obj.get("contents")),
+        "goals": _align(obj.get("goals")),
+        "contents": _align(obj.get("contents")),
     }
 
 
@@ -1288,6 +1322,53 @@ def translate_title_ko_en(text: str) -> str:
         return ""
     line = _unwrap_fence(raw or "").strip().strip('"').strip("'")
     return line.splitlines()[0].strip() if line else ""
+
+
+_TABLE_AI_SYSTEM = (
+    "당신은 정부 R&D 연구개발계획서의 '표 한 개'를 채우는 편집자다. 주어진 표의 "
+    "**빈 칸(empty_cells 목록)만** 채운다.\n"
+    "규칙: (1) 헤더·이미 값이 있는 칸·합계/비율 칸은 절대 바꾸지 않는다. "
+    "(2) empty_cells 에 없는 좌표는 출력하지 않는다. "
+    "(3) 근거 없는 구체 수치·금액은 지어내지 말고 '[확인 필요]' 로 남긴다. "
+    "(4) 각 값은 그 칸의 행/열 머리글 의미에 맞게 간결히. 표 성격상 채울 내용이 없으면 그 칸은 생략.\n"
+    "출력은 **JSON 객체 하나만**: {\"cells\": [{\"row\": <정수>, \"col\": <정수>, \"text\": \"...\"}, ...]}. "
+    "코드펜스 밖 설명 금지."
+)
+
+
+def table_ai_fill(context_text: str, grid_text: str, empty_cells: list[dict],
+                  instruction: str) -> list[dict]:
+    """표의 빈 칸만 채울 값 목록 [{row,col,text}] 을 제안한다(실패·미가용 시 []).
+
+    empty_cells = [{row,col}] (채워도 되는 좌표). 모델이 그 밖의 좌표를 내면 호출부(main)에서
+    폐기한다(여기서도 좌표 집합으로 1차 필터). instruction 은 사용자의 자연어 지시."""
+    allow = {(int(c.get("row")), int(c.get("col"))) for c in (empty_cells or [])
+             if c.get("row") is not None and c.get("col") is not None}
+    if not allow:
+        return []
+    ec = ", ".join(f"(r{r},c{c})" for r, c in sorted(allow))
+    user = (
+        f"[과제 배경]\n{(context_text or '')[:5000]}\n\n"
+        f"[표 현재 내용 — 행\t열: 값]\n{(grid_text or '')[:6000]}\n\n"
+        f"[채울 빈 칸 좌표]\n{ec}\n\n"
+        f"[지시]\n{(instruction or '').strip() or '표 성격에 맞게 빈 칸을 채워라.'}\n\n"
+        "위 빈 칸만 채운 JSON 을 제안하라."
+    )
+    try:
+        raw = _ask(_TABLE_AI_SYSTEM, [{"role": "user", "content": user}], max_tokens=2000)
+    except Exception:  # noqa: BLE001
+        return []
+    obj = _parse_json_obj(raw)
+    out: list[dict] = []
+    for c in (obj.get("cells") if isinstance(obj, dict) else None) or []:
+        try:
+            r, col = int(c.get("row")), int(c.get("col"))
+        except Exception:  # noqa: BLE001
+            continue
+        t = str(c.get("text", "") or "").strip()
+        if t and (r, col) in allow:
+            out.append({"row": r, "col": col, "text": t})
+    return out
 
 
 # ── 자체 테스트(__main__): 항상 스텁 모드로 실행 ─────────────────────────────

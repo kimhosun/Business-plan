@@ -159,7 +159,7 @@ def _coops(insts: list) -> list:
 
 
 # ── 표지 표 ──────────────────────────────────────────────────────────────────
-def _fill_cover(index: dict, ov: dict, edits: list) -> int:
+def _fill_cover(pid: str, index: dict, ov: dict, edits: list) -> int:
     tp = _find_table(index, "연구개발과제명", "주관연구개발기관", "사업자등록번호")
     if not tp:
         return 0
@@ -317,7 +317,7 @@ def _fill_cover(index: dict, ov: dict, edits: list) -> int:
 
 
 # ── 요약문 표(연구개발 목표 및 내용) ─────────────────────────────────────────
-def _fill_summary(index: dict, ov: dict, edits: list) -> int:
+def _fill_summary(pid: str, index: dict, ov: dict, edits: list) -> int:
     tp = _find_table(index, "연구개발 목표", "국문핵심어")
     if not tp:
         return 0
@@ -347,7 +347,7 @@ def _fill_summary(index: dict, ov: dict, edits: list) -> int:
 
 
 # ── 3-3 기술개발팀 편성도 표 ─────────────────────────────────────────────────
-def _fill_team(index: dict, ov: dict, edits: list) -> int:
+def _fill_team(pid: str, index: dict, ov: dict, edits: list) -> int:
     tp = _find_table(index, "주관연구개발기관명", "담당기술내용", "참 여 연 구 원")
     if not tp:
         return 0
@@ -389,7 +389,7 @@ def _ratio_ae(a: int, b: int) -> str:
 _BKEYS = ("A", "B", "C", "cash", "inkind", "E")
 
 
-def _fill_budget_81(index: dict, ov: dict, edits: list) -> int:
+def _fill_budget_81(pid: str, index: dict, ov: dict, edits: list) -> int:
     tp = _find_table(index, "기관부담연구개발비", "비율(A/E)", "현금(A)")
     if not tp:
         return 0
@@ -648,15 +648,42 @@ def _fill_bimok(cells: list, ov: dict, edits: list, org_filter: str | None) -> i
     return 1 if wrote else 0
 
 
-def _fill_budget_82(index: dict, ov: dict, edits: list) -> int:
-    """8-2 총괄표: 연구개발비 총액 = 전 기관 연차별 E 합."""
-    tp = _find_table(index, "인건비 비율(E1/M)", "직접비 소계", "연구개발비 총액")
-    if not tp:
-        return 0
-    return _fill_bimok(tables._cells_of_table(index, tp), ov, edits, None)
+def usage_bimok_paths(pid: str, index: dict) -> list[str]:
+    """8-2 절의 '비목별 사용계획 총괄표'(기관별, 26×11) path 를 문서순으로.
+
+    앱이 아는 표(노드 8-2 의 table_paths)로만 한정한다(등록 안 된 중복 총괄표는 편집기와
+    동일하게 무시). 시그니처('수정인건비'+'직접비 소계'+'연구개발비 총액')로 집계표
+    (p672, '인건비 비율(E1/M)')·인건비/학생인건비/참고자료 하위표를 배제한다."""
+    node = store.node_by_id(pid, "8-2") or {}
+    out = []
+    for tp in (node.get("table_paths") or []):
+        blob = " ".join((c.get("text") or "")
+                        for c in tables._cells_of_table(index, tp))
+        if all(x in blob for x in ("수정인건비", "직접비 소계", "연구개발비 총액")):
+            out.append(tp)
+    return sorted(out, key=lambda tp: tuple(int(x) for x in re.findall(r"\d+", tp)))
 
 
-def _fill_budget_83(index: dict, ov: dict, edits: list) -> int:
+def _fill_budget_82(pid: str, index: dict, ov: dict, edits: list) -> int:
+    """8-2 연구개발비 사용계획:
+    - 집계(전 기관 합) 총괄표: '인건비 비율(E1/M)' 시그니처, 전 기관 연차별 E 합.
+    - 기관별 비목 총괄표(표1, 26×11): 등장순 ↔ 기관(주관 먼저) 매핑, 각 M 행 = 그 기관
+      연차별 E(= /budget/sync-usage 로 표 개수를 기관 수에 맞춘 뒤 채움)."""
+    filled = 0
+    agg = _find_table(index, "인건비 비율(E1/M)", "직접비 소계", "연구개발비 총액")
+    if agg:
+        filled += _fill_bimok(tables._cells_of_table(index, agg), ov, edits, None)
+    ordered = [i for i in _ordered_insts(ov.get("institutions") or [])
+               if (i.get("name") or "").strip()]
+    for i, tp in enumerate(usage_bimok_paths(pid, index)):
+        if i >= len(ordered):
+            break
+        name = (ordered[i].get("name") or "").strip()
+        filled += _fill_bimok(tables._cells_of_table(index, tp), ov, edits, name)
+    return 1 if filled else 0
+
+
+def _fill_budget_83(pid: str, index: dict, ov: dict, edits: list) -> int:
     """8-3 비목별 세부표(기관별): 등장순 표 ↔ 기관(주관먼저) 매핑, 각 M 행 = 그 기관 연차별 E."""
     tps = _find_tables(index, "수정인건비", "간접비 비율", "연구개발비 총액")
     if not tps:
@@ -686,7 +713,7 @@ def apply(pid: str) -> dict:
     filled = 0
     for fn in _FILLERS:
         try:
-            filled += fn(index, ov, edits)
+            filled += fn(pid, index, ov, edits)
         except Exception:  # noqa: BLE001 - 표 채움 실패가 빌드를 막지 않게
             continue
     if edits:
@@ -700,5 +727,5 @@ def preview(pid: str, ov: dict | None = None) -> list[dict]:
     index = _index(pid)
     edits: list[dict] = []
     for fn in _FILLERS:
-        fn(index, ov, edits)
+        fn(pid, index, ov, edits)
     return edits
