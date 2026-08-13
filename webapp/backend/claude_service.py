@@ -724,6 +724,9 @@ def _chat_context_block(context: dict) -> str:
     if len(rfp) > _CONVERT_RFP_MAX:
         rfp = rfp[:_CONVERT_RFP_MAX]
     overview = context.get("overview") or ""
+    # 스킬 보관함(backend/skills.py)에서 이 질문과 관련되어 고른 지침들.
+    # 순수 모듈로 두기 위해 여기서는 이미 고른 것을 렌더만 한다.
+    skills = [s for s in (context.get("skills") or []) if (s or {}).get("body")]
 
     return (
         f"\n\n[대상 절]\n{label} {title}".rstrip()
@@ -733,8 +736,26 @@ def _chat_context_block(context: dict) -> str:
         + f"\n\n[양식 템플릿]\n```yaml\n{tpl_yaml}```"
         + f"\n\n[문체]\n{prompts.get('style') or '(지정 없음)'}"
         + f"\n\n[구성]\n{prompts.get('structure') or '(지정 없음)'}"
+        + _skills_block(skills)
         + f"\n\n[현재 작성본]\n{current or '(비어 있음)'}"
     )
+
+
+def _skills_block(skills: list[dict]) -> str:
+    """저장된 스킬(작성 지침) 중 이 질문에 관련된 것들을 프롬프트 블록으로."""
+    if not skills:
+        return ""
+    out = [
+        "\n\n[적용 스킬]\n"
+        "아래는 사용자가 보관함에 저장해 둔 작성 지침 중 이번 요청과 관련된 것이다. "
+        "[작성요령]·[양식 템플릿]과 충돌하지 않는 범위에서 그대로 따른다."
+    ]
+    for skill in skills:
+        name = (skill.get("name") or skill.get("slug") or "스킬").strip()
+        desc = (skill.get("description") or "").strip()
+        out.append(f"\n\n### 스킬: {name}" + (f"\n({desc})" if desc else "")
+                   + "\n" + (skill.get("body") or "").strip())
+    return "".join(out)
 
 
 def _stub_chat_write(

@@ -35,7 +35,7 @@ webapp/data/projects/<pid>/
     prompts.json       # {"style": "...", "structure": "...", "guidelines": [...]}
     input.md           # 사용자 원문 입력
     result.yaml        # 변환결과 = [{path,marker,text}] (yaml/에 반영된 값)
-    chat.json          # 작성 채팅 이력 [{role,content,at}]
+    chat.json          # 작성 채팅 이력 [{role,content,at,skills?}] (skills=그 턴에 적용된 스킬 요약)
   output/final.hwpx    # 빌드 산출물
   output/preview.pdf   # 미리보기
   rfp/source.<ext>     # 업로드된 RFP 원본(.pdf/.hwpx/.hwp)
@@ -76,6 +76,13 @@ webapp/data/projects/<pid>/
   공통원칙 §0~§9 요약, 심화 지침, **출처 경로(원본 md·지침 md·지침.json·sha256)** 를 모으고,
   `build_pdf(reg, out, project_ctx)` 가 reportlab(맑은 고딕/나눔고딕)으로 A4 PDF 를 렌더한다.
   출처 부록이 있어 UI ② 프롬프트 칸의 요약 문구를 나중에 원본과 대조할 수 있다.
+- `backend/skills.py` : **스킬 보관함**(프로젝트 공용). 사용자가 저장한 작성 지침을 대화창 질문과
+  매칭해 프롬프트에 붙인다. `data/skills/<slug>.md`(YAML frontmatter `name/description/triggers/
+  scope/source/updated` + 본문)로 저장 — Claude Code `.claude/skills/*/SKILL.md` 와 같은 형식이라
+  `import_repo_skill(key)` 로 저장소 스킬을 그대로 가져올 수 있다. `list_skills/read_skill/
+  save_skill/delete_skill/repo_skills`, `match(query, context)`(LLM 없는 **결정론적 키워드 매칭** —
+  trigger 3.0·name 2.5·description 1.5·본문 0.5 가중, 절 제목 등 맥락 토큰 ×0.4, 점수 2.0 이상
+  상위 3개·본문 합계 12000자 이내. scope=always 는 항상, off 는 제외), `context_block/brief`.
 - `backend/schemas.py` : pydantic 모델(요청/응답).
 - `backend/main.py` : FastAPI 앱 + 라우트 + 정적 프론트 마운트.
 - `frontend/index.html, app.js, styles.css` : 2열 UI.
@@ -92,9 +99,15 @@ webapp/data/projects/<pid>/
 | POST | `/api/projects/{pid}/nodes/{nid}/template/generate` | body `{description}` → Claude 생성→저장→반환 |
 | PUT  | `/api/projects/{pid}/nodes/{nid}/prompts` | body `{style,structure}` 저장 |
 | PUT  | `/api/projects/{pid}/nodes/{nid}/input` | body `{input}` 저장 |
-| POST | `/api/projects/{pid}/nodes/{nid}/chat` | body `{message,apply}` → Claude 가 절 맥락(양식·작성요령·문체·현재 본문)으로 답변+본문 초안 생성. apply면 input.md 반영 → `{reply,draft,input,chat}` |
+| POST | `/api/projects/{pid}/nodes/{nid}/chat` | body `{message,apply,skills?,use_skills}` → Claude 가 절 맥락(양식·작성요령·문체·현재 본문) + **질문에 매칭된 저장 스킬**로 답변+본문 초안 생성. apply면 input.md 반영 → `{reply,draft,input,chat,skills}` |
 | DELETE | `/api/projects/{pid}/nodes/{nid}/chat` | 채팅 이력 초기화(본문 유지) → `{chat}` |
 | POST | `/api/projects/{pid}/nodes/{nid}/convert` | Claude 변환→result.yaml 저장+yaml/ 병합 → `{result:[{path,before,after,marker}]}` |
+| GET  | `/api/skills` | 스킬 보관함 목록 + 저장소 가져오기 후보 → `{skills:[{slug,name,description,triggers,scope,source,chars}],repo:[{key,name,description,imported}]}` |
+| GET  | `/api/skills/{slug}` | 스킬 하나(본문 포함) |
+| POST | `/api/skills` | body `{slug?,name,description,body,triggers,scope}` 저장(신규/수정) → 저장된 스킬 |
+| DELETE | `/api/skills/{slug}` | 스킬 삭제 → `{deleted,skills}` |
+| POST | `/api/skills/import` | body `{keys:[...]}` — `.claude/skills/<key>/SKILL.md` 를 보관함으로 복사 → `{imported,skills}` |
+| POST | `/api/skills/match` | body `{query,context}` — 이 질문이면 붙을 스킬 미리보기 → `{matched}` |
 | GET  | `/api/regulations/{nid}` | 절 nid 작성 규정(구조화 JSON) + 원본 확인 경로 |
 | GET  | `/api/projects/{pid}/nodes/{nid}/regulations.pdf` | 절 nid 작성 규정 PDF(inline). output/regulations_{nid}.pdf 로 생성 |
 | GET  | `/api/projects/{pid}/rfp` | 업로드된 RFP 메타 + 기본 대상 절 → `{meta:{filename,chars,uploaded},sections[]}` |
@@ -118,7 +131,10 @@ webapp/data/projects/<pid>/
   1. **양식 템플릿**: template.yaml 텍스트에디터 + "AI로 양식 생성"(설명 입력→generate) + 저장
   2. **작성 프롬프트**: style/structure textarea(기본 가이드 프리필) + 저장
   3. **입력**: 사용자 원문 textarea + 저장, 하단에 **작성 채팅**(Claude) —
-     아래에 지시를 쓰면 위 본문을 양식·문체대로 다시 써서 반영(자동 반영 토글·대화 초기화)
+     아래에 지시를 쓰면 위 본문을 양식·문체대로 다시 써서 반영(자동 반영 토글·대화 초기화).
+     채팅 헤더에 **[🧰 스킬 자동적용]** 토글, 답변에는 적용된 스킬 배지 + 상단 "🧰 적용된 스킬: …" 안내
   4. **변환**: 버튼 → 변환결과 before/after 리스트 표시
+- 상단바: [🧰 스킬] → **스킬 보관함 모달**(좌: 저장된 스킬 목록 · 저장소(.claude/skills) 가져오기 ·
+  "이 질문이면 어떤 스킬이 붙나" 미리보기 / 우: 이름·설명·트리거·적용범위(자동/항상/사용안함)·본문 편집).
 - 상단바: [hwpx 빌드] → 완료 시 다운로드 링크 + PDF 미리보기 링크.
 - fetch 로 API 호출, 한국어 라벨, 반응형 2열(모바일은 세로 스택).

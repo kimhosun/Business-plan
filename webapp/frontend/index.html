@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>연구개발계획서 작성 웹서비스</title>
-  <link rel="stylesheet" href="styles.css?v=20260812c" />
+  <link rel="stylesheet" href="styles.css?v=20260813a" />
 </head>
 <body>
   <!-- 상단바 -->
@@ -20,6 +20,8 @@
       <input id="project-name" class="input project-name" type="text" maxlength="60"
              placeholder="새 프로젝트명(선택)" title="새 프로젝트 이름 — 비우면 문서명으로 저장됩니다" />
       <button id="btn-new-project" class="btn btn-secondary">기본 문서로 새 프로젝트</button>
+      <button id="btn-skills-open" class="btn btn-secondary"
+              title="작성 노하우·규칙을 '스킬'로 저장해 두면, 대화창 질문과 관련된 스킬이 자동으로 적용됩니다">🧰 스킬</button>
       <button id="btn-build" class="btn btn-primary" disabled>hwpx 빌드</button>
       <span id="build-links" class="build-links hidden">
         <a id="link-download" class="link" href="#" target="_blank" rel="noopener">⬇ hwpx 다운로드</a>
@@ -212,8 +214,12 @@
               <div class="chat-box">
                 <div class="chat-head">
                   <span>AI와 대화하며 작성</span>
+                  <label class="chat-skills-toggle" title="질문과 관련된 저장 스킬을 자동으로 프롬프트에 붙입니다">
+                    <input type="checkbox" id="chat-use-skills" checked /> 🧰 스킬 자동적용
+                  </label>
                   <button id="btn-chat-clear" class="btn-icon" title="대화 초기화">🗑</button>
                 </div>
+                <div id="chat-skill-hint" class="chat-skill-hint hidden"></div>
                 <div id="chat-log" class="chat-log">
                   <p class="placeholder">양식·작성요령·문체를 참고해 왼쪽 본문을 대신 써 드립니다. 재료나 수정 지시를 적어 보세요.</p>
                 </div>
@@ -408,9 +414,88 @@
     </div>
   </div>
 
+  <!-- 스킬 보관함 모달 -->
+  <div id="skill-modal" class="modal-overlay hidden" aria-hidden="true">
+    <div class="modal-card modal-card-wide" role="dialog" aria-modal="true" aria-labelledby="skm-title">
+      <div class="modal-head">
+        <h2 id="skm-title" class="modal-title">🧰 스킬 보관함</h2>
+        <span class="modal-sub">자주 쓰는 작성 규칙·노하우를 <b>스킬</b>로 저장해 두면, 절 작성 대화창에서 질문과
+          <b>관련된 스킬이 자동으로</b> 프롬프트에 붙습니다 (적용범위 <b>항상</b>이면 질문과 무관하게 매번 적용)</span>
+        <button id="btn-skill-close" class="modal-x" type="button" title="닫기">×</button>
+      </div>
+
+      <div class="modal-body skill-body">
+        <div class="skill-cols">
+          <!-- 좌: 목록 -->
+          <div class="skill-list-col">
+            <div class="skill-list-head">
+              <span>저장된 스킬</span>
+              <button id="btn-skill-new" class="btn-mini2" type="button">+ 새 스킬</button>
+            </div>
+            <div id="skill-list" class="skill-list">
+              <p class="placeholder">아직 저장된 스킬이 없습니다.</p>
+            </div>
+
+            <div class="skill-list-head">
+              <span>저장소 스킬 가져오기</span>
+              <span class="hint-mini">.claude/skills</span>
+            </div>
+            <div id="skill-repo-list" class="skill-repo-list"></div>
+
+            <div class="skill-test">
+              <label class="field-label" for="skill-test-q">질문 미리보기 — 이 질문이면 어떤 스킬이 붙나?</label>
+              <div class="row">
+                <input id="skill-test-q" class="input" type="text" placeholder="예) 1-2 시장 규모를 CAGR 포함해 써줘" />
+                <button id="btn-skill-test" class="btn btn-secondary" type="button">확인</button>
+              </div>
+              <div id="skill-test-out" class="skill-test-out"></div>
+            </div>
+          </div>
+
+          <!-- 우: 편집 -->
+          <div class="skill-edit-col">
+            <div class="skill-edit-head">
+              <span id="skill-edit-title">새 스킬</span>
+              <span id="skill-edit-src" class="skill-src"></span>
+            </div>
+            <label class="field-label" for="skill-name">이름</label>
+            <input id="skill-name" class="input" type="text" maxlength="60" placeholder="예) 시장 동향 정량 작성 규칙" />
+
+            <label class="field-label" for="skill-desc">설명 — <b>언제 쓰는 스킬인지</b> (자동 선택의 기준)</label>
+            <input id="skill-desc" class="input" type="text" maxlength="300"
+                   placeholder="예) 시장 규모·성장률(CAGR)·경쟁사 비교를 쓸 때 적용하는 정량 표기 규칙" />
+
+            <label class="field-label" for="skill-triggers">트리거 키워드 (쉼표로 구분, 선택)</label>
+            <input id="skill-triggers" class="input" type="text"
+                   placeholder="예) 시장, 규모, CAGR, 1-2, 경쟁사" />
+
+            <label class="field-label" for="skill-scope">적용 범위</label>
+            <select id="skill-scope" class="select">
+              <option value="auto">자동 — 질문과 관련될 때만 적용</option>
+              <option value="always">항상 — 모든 대화에 적용</option>
+              <option value="off">사용 안 함</option>
+            </select>
+
+            <label class="field-label" for="skill-body">스킬 본문 — AI에게 그대로 전달할 지침</label>
+            <textarea id="skill-body" rows="14"
+                      placeholder="예)&#10;- 시장 규모는 국내/세계를 분리해 제시하고 (출처, 연도)를 반드시 붙인다.&#10;- 성장률은 CAGR(%) 로 쓰고 기준 구간(예 2024~2030)을 명시한다.&#10;- 근거를 못 찾은 수치는 쓰지 말고 확인 필요로 표기한다."></textarea>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-foot">
+        <span id="skill-status" class="overview-status"></span>
+        <span class="modal-foot-spacer"></span>
+        <button id="btn-skill-delete" class="btn btn-danger" type="button">🗑 삭제</button>
+        <button id="btn-skill-cancel" class="btn btn-secondary" type="button">닫기</button>
+        <button id="btn-skill-save" class="btn btn-primary" type="button">저장</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 토스트 -->
   <div id="toast" class="toast hidden"></div>
 
-  <script src="app.js?v=20260812c"></script>
+  <script src="app.js?v=20260813a"></script>
 </body>
 </html>

@@ -66,12 +66,42 @@ class OverviewBody(_Base):
 
 
 class ChatBody(_Base):
-    """POST .../chat — {message, apply}
+    """POST .../chat — {message, apply, skills, use_skills}
 
     apply=True(기본)면 모델이 낸 draft 를 그 절의 input.md 에 그대로 반영한다.
+    skills 를 주면 자동 선택 대신 그 slug 들을 강제로 적용하고,
+    use_skills=False 면 스킬을 아예 붙이지 않는다.
     """
     message: str = ""
     apply: bool = True
+    skills: list[str] | None = None
+    use_skills: bool = True
+
+
+class SkillBody(_Base):
+    """POST /api/skills — 스킬 저장(신규/수정).
+
+    slug 가 있으면 그 스킬을 덮어쓰고, 없으면 name 으로 새로 만든다.
+    scope: auto(관련 있을 때만) | always(항상) | off(사용 안 함)
+    """
+    slug: str = ""
+    name: str = ""
+    description: str = ""
+    body: str = ""
+    triggers: list[str] | str | None = None
+    scope: str = "auto"
+
+
+class SkillImportBody(_Base):
+    """POST /api/skills/import — {keys:[".claude/skills 폴더명", ...]}"""
+    keys: list[str] = Field(default_factory=list)
+    scope: str = "auto"
+
+
+class SkillMatchBody(_Base):
+    """POST /api/skills/match — {query, context} 로 어떤 스킬이 붙을지 미리보기."""
+    query: str = ""
+    context: str = ""
 
 
 # ── 응답 모델 ────────────────────────────────────────────────────────────────

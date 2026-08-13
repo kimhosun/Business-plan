@@ -104,9 +104,17 @@ const API = {
   putFormulas: (pid, nid, formulas) =>
     api(`/api/projects/${pid}/nodes/${nid}/tables/formulas`, jsonBody({ formulas })),
   putInput: (pid, nid, input) => api(`/api/projects/${pid}/nodes/${nid}/input`, jsonBody({ input })),
-  chat: (pid, nid, message, apply) =>
-    api(`/api/projects/${pid}/nodes/${nid}/chat`, postJson({ message, apply })),
+  chat: (pid, nid, message, apply, useSkills) =>
+    api(`/api/projects/${pid}/nodes/${nid}/chat`,
+        postJson({ message, apply, use_skills: useSkills !== false })),
   clearChat: (pid, nid) => api(`/api/projects/${pid}/nodes/${nid}/chat`, { method: "DELETE" }),
+  /* 스킬 보관함 — 대화창 질문과 관련된 스킬이 자동으로 프롬프트에 붙는다 */
+  listSkills: () => api("/api/skills"),
+  getSkill: (slug) => api(`/api/skills/${encodeURIComponent(slug)}`),
+  saveSkill: (skill) => api("/api/skills", postJson(skill)),
+  deleteSkill: (slug) => api(`/api/skills/${encodeURIComponent(slug)}`, { method: "DELETE" }),
+  importSkills: (keys) => api("/api/skills/import", postJson({ keys })),
+  matchSkills: (query, context) => api("/api/skills/match", postJson({ query, context })),
   convert: (pid, nid) => api(`/api/projects/${pid}/nodes/${nid}/convert`, postJson({})),
   build: (pid) => api(`/api/projects/${pid}/build`, postJson({})),
   downloadUrl: (pid) => `/api/projects/${pid}/download`,
@@ -524,6 +532,7 @@ function renderNode(node) {
   $("#input-text").value = node.input || "";
   $("#chat-input").value = "";
   renderChat(node.chat);
+  showChatSkillHint([]);   // 절을 바꾸면 '적용된 스킬' 안내는 지운다(이력 배지는 유지)
 
   // 4) 변환 결과 (기존 result 표시)
   renderConvertResult(node.result);
@@ -650,11 +659,24 @@ function renderChat(chat) {
     return;
   }
   chat.forEach((turn) => {
+    const parts = [
+      el("span", { class: "chat-role", text: turn.role === "user" ? "나" : "AI" }),
+      el("div", { class: "chat-text", text: turn.content || "" }),
+    ];
+    // 그 턴에 적용된 스킬(있으면) 배지로 표시 — 무엇이 반영됐는지 확인용
+    if (turn.skills && turn.skills.length) {
+      parts.push(
+        el("div", { class: "chat-skills" },
+          [el("span", { class: "chat-skills-ico", text: "🧰" })].concat(
+            turn.skills.map((s) =>
+              el("span", { class: "skill-badge", title: "적용된 스킬" + (s.scope === "always" ? " (항상)" : ""), text: s.name || s.slug })
+            )
+          )
+        )
+      );
+    }
     box.appendChild(
-      el("div", { class: "chat-msg chat-" + (turn.role === "user" ? "user" : "ai") }, [
-        el("span", { class: "chat-role", text: turn.role === "user" ? "나" : "AI" }),
-        el("div", { class: "chat-text", text: turn.content || "" }),
-      ])
+      el("div", { class: "chat-msg chat-" + (turn.role === "user" ? "user" : "ai") }, parts)
     );
   });
   box.scrollTop = box.scrollHeight;
@@ -679,8 +701,10 @@ async function sendChat() {
   renderChat(pending);
   try {
     const apply = $("#chat-apply").checked;
-    const res = await API.chat(state.pid, state.nid, message, apply);
+    const useSkills = !$("#chat-use-skills") || $("#chat-use-skills").checked;
+    const res = await API.chat(state.pid, state.nid, message, apply, useSkills);
     renderChat(res.chat);
+    showChatSkillHint(res.skills);
     field.value = "";
     if (state.node) state.node.chat = res.chat;
     if (apply && res.draft != null) {
@@ -706,9 +730,215 @@ async function clearChat() {
     const res = await API.clearChat(state.pid, state.nid);
     if (state.node) state.node.chat = res.chat || [];
     renderChat(res.chat);
+    showChatSkillHint([]);
     toast("대화를 초기화했습니다(본문은 그대로).", "ok");
   } catch (e) {
     toast("초기화 실패: " + e.message, "err");
+  }
+}
+
+/* 방금 답변에 적용된 스킬을 채팅 상단에 한 줄로 알려준다. */
+function showChatSkillHint(skills) {
+  const box = $("#chat-skill-hint");
+  if (!box) return;
+  if (!skills || !skills.length) {
+    box.textContent = "";
+    box.classList.add("hidden");
+    return;
+  }
+  box.textContent = "🧰 적용된 스킬: " + skills.map((s) => s.name || s.slug).join(" · ");
+  box.classList.remove("hidden");
+}
+
+/* ------------------------------------------------------------------ */
+/* 스킬 보관함 (모달) — 대화창 질문에 관련 스킬을 자동 적용            */
+/* ------------------------------------------------------------------ */
+const skillState = { list: [], repo: [], slug: "" }; // slug="" 면 새 스킬
+
+function skillStatus(text, kind = "") {
+  const box = $("#skill-status");
+  if (!box) return;
+  box.textContent = text || "";
+  box.className = "overview-status" + (kind ? " " + kind : "") + (text ? "" : " hidden");
+}
+
+async function openSkillModal() {
+  const m = $("#skill-modal");
+  m.classList.remove("hidden");
+  m.setAttribute("aria-hidden", "false");
+  skillStatus("");
+  await loadSkills();
+  if (!skillState.slug) skillEditNew();
+}
+
+function closeSkillModal() {
+  const m = $("#skill-modal");
+  if (!m || m.classList.contains("hidden")) return;
+  m.classList.add("hidden");
+  m.setAttribute("aria-hidden", "true");
+}
+
+async function loadSkills(keepSelection = true) {
+  try {
+    const res = await API.listSkills();
+    skillState.list = res.skills || [];
+    skillState.repo = res.repo || [];
+  } catch (e) {
+    skillStatus("스킬 목록 로드 실패: " + e.message, "err");
+    return;
+  }
+  if (!keepSelection || !skillState.list.some((s) => s.slug === skillState.slug)) {
+    skillState.slug = "";
+  }
+  renderSkillList();
+  renderSkillRepo();
+}
+
+const SCOPE_LABEL = { auto: "자동", always: "항상", off: "off" };
+
+function renderSkillList() {
+  const box = $("#skill-list");
+  box.innerHTML = "";
+  if (!skillState.list.length) {
+    box.appendChild(el("p", { class: "placeholder", text: "아직 저장된 스킬이 없습니다. [+ 새 스킬] 로 만들거나 아래에서 가져오세요." }));
+    return;
+  }
+  skillState.list.forEach((s) => {
+    box.appendChild(
+      el("div", {
+        class: "skill-item" + (s.slug === skillState.slug ? " active" : ""),
+        onclick: () => selectSkill(s.slug),
+      }, [
+        el("div", { class: "skill-item-head" }, [
+          el("span", { class: "skill-item-name", text: s.name }),
+          el("span", { class: "skill-scope skill-scope-" + s.scope, text: SCOPE_LABEL[s.scope] || s.scope }),
+        ]),
+        el("div", { class: "skill-item-desc", text: s.description || "(설명 없음 — 자동 선택이 잘 안 될 수 있습니다)" }),
+      ])
+    );
+  });
+}
+
+function renderSkillRepo() {
+  const box = $("#skill-repo-list");
+  box.innerHTML = "";
+  if (!skillState.repo.length) {
+    box.appendChild(el("p", { class: "placeholder", text: "저장소에서 찾은 스킬이 없습니다." }));
+    return;
+  }
+  skillState.repo.forEach((r) => {
+    box.appendChild(
+      el("div", { class: "skill-repo-item" }, [
+        el("span", { class: "skill-repo-name", title: r.description || "", text: r.name }),
+        r.imported
+          ? el("span", { class: "skill-repo-done", text: "가져옴" })
+          : el("button", {
+              class: "btn-mini2", type: "button", text: "가져오기",
+              onclick: () => importRepoSkill(r.key),
+            }),
+      ])
+    );
+  });
+}
+
+async function importRepoSkill(key) {
+  try {
+    const res = await API.importSkills([key]);
+    await loadSkills(false);
+    const first = (res.imported || [])[0];
+    if (first) await selectSkill(first.slug);
+    skillStatus(`가져왔습니다: ${first ? first.name : key}`, "ok");
+  } catch (e) {
+    skillStatus("가져오기 실패: " + e.message, "err");
+  }
+}
+
+function skillEditNew() {
+  skillState.slug = "";
+  $("#skill-edit-title").textContent = "새 스킬";
+  $("#skill-edit-src").textContent = "";
+  $("#skill-name").value = "";
+  $("#skill-desc").value = "";
+  $("#skill-triggers").value = "";
+  $("#skill-scope").value = "auto";
+  $("#skill-body").value = "";
+  $("#btn-skill-delete").disabled = true;
+  renderSkillList();
+}
+
+async function selectSkill(slug) {
+  try {
+    const s = await API.getSkill(slug);
+    skillState.slug = s.slug;
+    $("#skill-edit-title").textContent = "스킬 편집";
+    $("#skill-edit-src").textContent = s.source && s.source !== "user" ? "출처: " + s.source : "";
+    $("#skill-name").value = s.name || "";
+    $("#skill-desc").value = s.description || "";
+    $("#skill-triggers").value = (s.triggers || []).join(", ");
+    $("#skill-scope").value = s.scope || "auto";
+    $("#skill-body").value = s.body || "";
+    $("#btn-skill-delete").disabled = false;
+    skillStatus("");
+    renderSkillList();
+  } catch (e) {
+    skillStatus("스킬 로드 실패: " + e.message, "err");
+  }
+}
+
+async function saveSkill() {
+  const name = $("#skill-name").value.trim();
+  const body = $("#skill-body").value.trim();
+  if (!name) { skillStatus("스킬 이름을 입력하세요.", "err"); return; }
+  if (!body) { skillStatus("스킬 본문(AI에게 줄 지침)을 입력하세요.", "err"); return; }
+  const payload = {
+    slug: skillState.slug || "",
+    name,
+    description: $("#skill-desc").value.trim(),
+    triggers: $("#skill-triggers").value.split(",").map((t) => t.trim()).filter(Boolean),
+    scope: $("#skill-scope").value,
+    body,
+  };
+  try {
+    const saved = await API.saveSkill(payload);
+    skillState.slug = saved.slug;
+    await loadSkills();
+    await selectSkill(saved.slug);
+    skillStatus("저장했습니다. 이제 대화창 질문과 관련되면 자동으로 적용됩니다.", "ok");
+    toast("스킬 저장됨", "ok");
+  } catch (e) {
+    skillStatus("저장 실패: " + e.message, "err");
+  }
+}
+
+async function deleteCurrentSkill() {
+  if (!skillState.slug) return;
+  const cur = skillState.list.find((s) => s.slug === skillState.slug);
+  if (!confirm(`스킬 "${cur ? cur.name : skillState.slug}" 을(를) 삭제할까요?`)) return;
+  try {
+    await API.deleteSkill(skillState.slug);
+    skillState.slug = "";
+    await loadSkills(false);
+    skillEditNew();
+    skillStatus("삭제했습니다.", "ok");
+  } catch (e) {
+    skillStatus("삭제 실패: " + e.message, "err");
+  }
+}
+
+async function testSkillMatch() {
+  const q = $("#skill-test-q").value.trim();
+  const out = $("#skill-test-out");
+  if (!q) { out.textContent = "질문을 입력하세요."; return; }
+  const ctx = state.node ? `${state.node.label || ""} ${state.node.title || ""}` : "";
+  out.textContent = "확인 중…";
+  try {
+    const res = await API.matchSkills(q, ctx);
+    const matched = res.matched || [];
+    out.textContent = matched.length
+      ? "적용될 스킬: " + matched.map((s) => `${s.name}(${s.score})`).join(" · ")
+      : "관련된 스킬이 없어 아무것도 붙지 않습니다. (설명·트리거 키워드를 보완해 보세요)";
+  } catch (e) {
+    out.textContent = "확인 실패: " + e.message;
   }
 }
 
@@ -2186,7 +2416,24 @@ function bindEvents() {
   });
   // ESC 로 닫기
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") closeOverviewModal(true);
+    if (e.key !== "Escape") return;
+    closeOverviewModal(true);
+    closeSkillModal();
+  });
+
+  // 스킬 보관함 모달
+  $("#btn-skills-open").addEventListener("click", openSkillModal);
+  $("#btn-skill-close").addEventListener("click", closeSkillModal);
+  $("#btn-skill-cancel").addEventListener("click", closeSkillModal);
+  $("#btn-skill-new").addEventListener("click", skillEditNew);
+  $("#btn-skill-save").addEventListener("click", saveSkill);
+  $("#btn-skill-delete").addEventListener("click", deleteCurrentSkill);
+  $("#btn-skill-test").addEventListener("click", testSkillMatch);
+  $("#skill-test-q").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); testSkillMatch(); }
+  });
+  $("#skill-modal").addEventListener("mousedown", (e) => {
+    if (e.target.id === "skill-modal") closeSkillModal();
   });
   // 행 추가
   $("#btn-inst-add").addEventListener("click", () => {

@@ -18,13 +18,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import claude_service, config, doc_fill, pipeline, presets, regulations, rfp, store, tables
+from . import (
+    claude_service, config, doc_fill, pipeline, presets, regulations, rfp, skills, store, tables,
+)
 from .schemas import (
     ChatBody,
     GenerateBody,
     InputBody,
     OverviewBody,
     PromptsBody,
+    SkillBody,
+    SkillImportBody,
+    SkillMatchBody,
     TemplateBody,
 )
 
@@ -374,8 +379,11 @@ async def put_input(pid: str, nid: str, body: InputBody):
 def chat_node(pid: str, nid: str, body: ChatBody):
     """작성 채팅 한 턴. Claude 가 답변(reply)과 본문 초안(draft)을 낸다.
 
+    질문 내용과 관련된 **저장 스킬**(skills.py 보관함)을 골라 프롬프트에 붙인다.
+    body.skills 로 slug 를 지정하면 자동 선택 대신 그것만, use_skills=False 면 없이 간다.
+
     apply=True 면 draft 를 input.md 에 반영해 갱신된 input 을 함께 돌려준다.
-    → {reply, draft, input, chat}
+    → {reply, draft, input, chat, skills}
 
     claude 실행파일(subprocess) 경로가 수십 초 블로킹이라 sync 라우트로 둔다
     (FastAPI 가 스레드풀에서 실행 → 이벤트 루프를 막지 않음).
@@ -398,6 +406,17 @@ def chat_node(pid: str, nid: str, body: ChatBody):
             "rfp": store.read_rfp_text(pid),  # 업로드된 RFP 를 작성 근거로 반영
             "overview": store.read_overview(pid),  # 제반사항(공통 정보)을 최우선 근거로
         }
+        # 관련 스킬 선택(질문 + 절 제목 맥락). 지정이 있으면 그대로 쓴다.
+        picked: list[dict] = []
+        if body.use_skills:
+            if body.skills:
+                picked = [s for s in (skills.read_skill(sl) for sl in body.skills) if s]
+            else:
+                picked = skills.match(
+                    message, context=f"{detail.get('label','')} {detail.get('title','')}"
+                )
+        context["skills"] = picked
+        used = skills.brief(picked)
         history = detail.get("chat") or []
 
         result = claude_service.chat_write(context, history, message)
@@ -405,13 +424,14 @@ def chat_node(pid: str, nid: str, body: ChatBody):
         draft = result.get("draft")
 
         store.append_chat(pid, nid, "user", message)
-        chat = store.append_chat(pid, nid, "assistant", reply)
+        chat = store.append_chat(pid, nid, "assistant", reply, skills=used)
 
         input_text = context["input"]
         if body.apply and draft is not None:
             input_text = store.write_input(pid, nid, draft)
 
-        return {"reply": reply, "draft": draft, "input": input_text, "chat": chat}
+        return {"reply": reply, "draft": draft, "input": input_text,
+                "chat": chat, "skills": used}
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -424,6 +444,61 @@ async def clear_chat(pid: str, nid: str):
     _require_project(pid)
     _node_or_404(pid, nid)
     return {"chat": store.clear_chat(pid, nid)}
+
+
+# ── 스킬 보관함 ───────────────────────────────────────────────────────────────
+# 프로젝트 공용. 대화창 질문과 관련된 스킬이 자동으로 프롬프트에 붙는다(skills.py).
+@app.get("/api/skills")
+async def get_skills():
+    """보관함 목록 + 저장소(.claude/skills) 가져오기 후보 → {skills, repo}"""
+    return {"skills": skills.list_skills(), "repo": skills.repo_skills()}
+
+
+@app.get("/api/skills/{slug}")
+async def get_skill(slug: str):
+    skill = skills.read_skill(slug)
+    if skill is None:
+        raise HTTPException(status_code=404, detail=f"skill not found: {slug}")
+    return skill
+
+
+@app.post("/api/skills")
+async def post_skill(body: SkillBody):
+    """스킬 저장(신규/수정) → 저장된 스킬."""
+    try:
+        return skills.save_skill(
+            name=body.name, description=body.description, body=body.body,
+            triggers=body.triggers, scope=body.scope, slug=body.slug or "",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/skills/{slug}")
+async def delete_skill(slug: str):
+    if not skills.delete_skill(slug):
+        raise HTTPException(status_code=404, detail=f"skill not found: {slug}")
+    return {"deleted": slug, "skills": skills.list_skills()}
+
+
+@app.post("/api/skills/import")
+async def import_skills(body: SkillImportBody):
+    """저장소 `.claude/skills/<key>/SKILL.md` 를 보관함으로 복사 → {imported, skills}"""
+    imported: list[dict] = []
+    for key in body.keys or []:
+        try:
+            imported.append(skills.import_repo_skill(key, scope=body.scope))
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"imported": [{"slug": s["slug"], "name": s["name"]} for s in imported],
+            "skills": skills.list_skills()}
+
+
+@app.post("/api/skills/match")
+async def match_skills(body: SkillMatchBody):
+    """이 질문이면 어떤 스킬이 붙는지 미리보기 → {matched:[{slug,name,score,...}]}"""
+    matched = skills.match(body.query or "", context=body.context or "")
+    return {"matched": skills.brief(matched)}
 
 
 @app.post("/api/projects/{pid}/nodes/{nid}/convert")

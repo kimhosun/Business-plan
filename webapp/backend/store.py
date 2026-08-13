@@ -349,10 +349,18 @@ def write_result(pid: str, nid: str, result: list[dict]) -> list[dict]:
     return result or []
 
 
-def append_chat(pid: str, nid: str, role: str, content: str) -> list[dict]:
-    """채팅 한 턴을 이력 끝에 붙이고 전체 이력을 반환."""
+def append_chat(
+    pid: str, nid: str, role: str, content: str, skills: list[dict] | None = None
+) -> list[dict]:
+    """채팅 한 턴을 이력 끝에 붙이고 전체 이력을 반환.
+
+    skills 를 주면 그 턴에 적용된 스킬 요약([{slug,name,...}])도 함께 남긴다.
+    """
     chat = read_chat(pid, nid)
-    chat.append({"role": role, "content": content or "", "at": _now()})
+    turn = {"role": role, "content": content or "", "at": _now()}
+    if skills:
+        turn["skills"] = skills
+    chat.append(turn)
     _write_json(_chat_path(pid, nid), chat)
     return chat
 
