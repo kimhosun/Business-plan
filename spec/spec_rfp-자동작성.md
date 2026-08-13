@@ -22,6 +22,8 @@ RFP(공고·제안요청서)를 올리면 본문을 추출·저장하고, 각 �
   **실제 인터넷 조사**를 해서 조사 내용을 바탕으로 작성하도록 작성 프롬프트를 업데이트."
   → 조사 결과: 웹 도구가 CLI에서 전면 차단돼 있었고 프롬프트가 '수치는 지어내지 말고 자리표시'를
   지시하고 있었음(그래서 수치 공란). 웹 조사 모드로 전환.
+- **2026-08-10** (원문 요지) "RFP 업로드하는데 추출 실패라고 나온다. 해결해줘."
+  → PDF 업로드 시 500. 원인은 `requirements.txt` 에 PDF 추출 라이브러리 누락(아래 후속 절).
 
 ## ② 확정 사양 (2026-08-10 개정 — 자동작성 제거, 참조 표시로 전환)
 
@@ -112,3 +114,19 @@ RFP(공고·제안요청서)를 올리면 본문을 추출·저장하고, 각 �
   ‘MDO’, ‘표준화 추진’ 등) 포함 확인.
 - 한계: 슬롯이 적은 절은 여러 문단이 한 문단으로 합쳐져 들어감(문단 삽입은 파이프라인 미지원).
   세밀한 문단 구조가 필요하면 사용자가 문서에서 조정.
+
+### 2026-08-10 후속 — PDF 업로드 "RFP 추출 실패"(해결)
+- 증상: PDF RFP 업로드 시 `POST /api/projects/{pid}/rfp` 가 500, UI 에 "RFP 추출 실패".
+- 원인: `_pdf_text` 는 PyMuPDF→pdfplumber 순으로 임포트하는데 **둘 다
+  `webapp/requirements.txt` 에 없었다.** 새 환경에서 requirements 대로 설치하면 PDF 경로만
+  `ModuleNotFoundError` 로 죽는다(.hwpx/.hwp 경로는 정상). ②의 "PyMuPDF, 실패 시 pdfplumber"
+  사양과 의존성 명세가 어긋나 있던 것.
+- 해결:
+  1) `requirements.txt` 에 `PyMuPDF`, `pdfplumber` 추가.
+  2) `rfp._pdf_text`: `import pymupdf`(정식 모듈명) 우선, 실패 시 `fitz` 폴백 —
+     PyMuPDF ≥1.24 의 `fitz` deprecation 경고 제거.
+  3) 둘 다 없을 때는 `ModuleNotFoundError` 대신 "`pip install -r webapp/requirements.txt`
+     를 실행하세요" 라는 `RuntimeError` 로 원인을 노출.
+- 검증: 실제 업로드 PDF(에너지기술개발사업 기술개요서, 175KB)로
+  `POST /api/projects/a84a7c5d/rfp` → **HTTP 200, chars=2480**, 본문 텍스트 정상 추출.
+- 참고(환경): 이 PC 에 Python 이 없어 3.12.10(winget) 설치 후 requirements 설치함.

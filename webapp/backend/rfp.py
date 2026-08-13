@@ -32,15 +32,24 @@ except ValueError:
 def _pdf_text(path: Path) -> str:
     """PDF → 텍스트(PyMuPDF). 미설치/실패 시 pdfplumber 로 폴백."""
     try:
-        import fitz  # PyMuPDF
+        try:
+            import pymupdf  # PyMuPDF ≥1.24 의 정식 모듈명
+        except ImportError:
+            import fitz as pymupdf  # 구버전 호환(deprecated)
 
         parts: list[str] = []
-        with fitz.open(str(path)) as doc:
+        with pymupdf.open(str(path)) as doc:
             for page in doc:
                 parts.append(page.get_text("text"))
         return "\n".join(parts).strip()
-    except Exception:  # noqa: BLE001 - fitz 실패 시 pdfplumber
-        import pdfplumber
+    except Exception:  # noqa: BLE001 - PyMuPDF 실패 시 pdfplumber
+        try:
+            import pdfplumber
+        except ImportError as exc:  # 둘 다 없으면 원인을 알 수 있게 안내
+            raise RuntimeError(
+                "PDF 추출 라이브러리가 없습니다. "
+                "`pip install -r webapp/requirements.txt` (PyMuPDF·pdfplumber) 를 실행하세요."
+            ) from exc
 
         parts = []
         with pdfplumber.open(str(path)) as pdf:

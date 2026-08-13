@@ -6,3 +6,5 @@ anthropic
 python-hwpx
 pyhwpx
 reportlab
+PyMuPDF
+pdfplumber
