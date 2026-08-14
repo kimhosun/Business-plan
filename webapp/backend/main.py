@@ -367,6 +367,67 @@ async def tables_ai_fill(pid: str, nid: str, body: dict = Body(...)):
     return {"edits": edits, "empty": len(empty)}
 
 
+_ECON_BULLETS = ("o", "○", "ㅇ", "-", "·", "•", "▪", "－", "◦")
+
+
+def _is_econ_fillable(txt: str) -> bool:
+    """빈 셀 또는 'o 항목 :' 골격/맨불릿 셀 → 채움 대상. 실제 값·머리글은 보호(False).
+
+    비어 있거나, 모든 비공백 줄이 (콜론으로 끝나는 라벨) 또는 (맨 불릿 기호)뿐이면 골격으로 본다."""
+    s = (txt or "").strip()
+    if not s:
+        return True
+    for line in s.splitlines():
+        ln = line.strip()
+        if not ln:
+            continue
+        if ln.endswith(":") or ln.endswith("："):
+            continue
+        if ln in _ECON_BULLETS:
+            continue
+        return False   # 실제 내용(머리글·값) → 보호
+    return True
+
+
+@app.post("/api/projects/{pid}/nodes/{nid}/tables/ai-fill-econ")
+async def tables_ai_fill_econ(pid: str, nid: str, body: dict = Body(...)):
+    """5-4 경제적 성과 표(매출전망·투자계획·사업화전략)를 **절 전체**로 AI 제안(저장 안 함).
+
+    일반 ai-fill 과 달리 'o 항목 :' 골격 셀도 채움 대상에 포함해, 사업화 전략의 항목 값까지 제안한다.
+    반환 {edits:[{paths,text,table,row,col}]}. 프런트가 검토 후 [표 저장]."""
+    _require_project(pid)
+    data = tables.tables_for(pid, nid)
+    tbls = data.get("tables") or []
+    if not tbls:
+        raise HTTPException(status_code=400, detail="이 절에는 표가 없습니다.")
+    payload: list[dict] = []
+    paths_by: dict[tuple, list] = {}
+    for ti, t in enumerate(tbls):
+        cells = t.get("cells") or []
+        grid_lines: list[str] = []
+        fillable: list[dict] = []
+        for c in sorted(cells, key=lambda x: (x["row"], x["col"])):
+            raw = c.get("text") or ""
+            grid_lines.append(f"r{c['row']}\tc{c['col']}\t{raw.strip()}")
+            paths_by[(ti, c["row"], c["col"])] = c["paths"]
+            if _is_econ_fillable(raw):
+                fillable.append({"row": c["row"], "col": c["col"], "current": raw})
+        if fillable:
+            payload.append({"index": ti, "grid": "\n".join(grid_lines), "fillable": fillable})
+    if not payload:
+        return {"edits": [], "reason": "채울 셀 없음"}
+    ctx = [f"[절] {data.get('label', '')} {data.get('title', '')}", store.read_overview(pid)]
+    rfp_text = store.read_rfp_text(pid)
+    if rfp_text:
+        ctx.append("[RFP]\n" + rfp_text[:3000])
+    proposed = claude_service.econ_tables_suggest(
+        "\n".join(p for p in ctx if (p or "").strip()), payload, (body or {}).get("instruction", ""))
+    edits = [{"paths": paths_by[(c["table"], c["row"], c["col"])], "text": c["text"],
+              "table": c["table"], "row": c["row"], "col": c["col"]}
+             for c in proposed if (c["table"], c["row"], c["col"]) in paths_by]
+    return {"edits": edits, "fillable": sum(len(p["fillable"]) for p in payload)}
+
+
 @app.put("/api/projects/{pid}/nodes/{nid}/input")
 async def put_input(pid: str, nid: str, body: InputBody):
     _require_project(pid)
@@ -779,6 +840,80 @@ def _sync_budget_usage(pid: str) -> dict:
         return {"changed": False, "reason": "이미 일치", "count": n}
     info = tables.rebuild_budget_detail(pid, n, paths)
     return {"changed": True, "institutions": n, **(info or {})}
+
+
+@app.post("/api/projects/{pid}/contrib/sync-rows")
+def contrib_sync_rows(pid: str):
+    """4-3 기술기여도 표의 데이터 행을 참여기관 수만큼 늘린 뒤, 기관별 기술기여도
+    (= 정부출연금/총연구개발비, 비영리 100%)를 전 연차 열에 채운다.
+
+    표준 서식은 예시 2행(AAAAA·BBBBB)뿐이라 3개 이상 기관은 행이 모자란다. 행 복제는
+    구조편집(순수복원→표 XML 조작→재추출)이라 수십 초 걸릴 수 있어 별도 버튼으로 호출한다."""
+    _require_project(pid)
+    rebuilt = None
+    try:
+        rebuilt = _sync_contrib_rows(pid)
+    except Exception as exc:  # noqa: BLE001 - 실패 시 원상복구됨(_apply_structural)
+        raise HTTPException(status_code=500, detail=f"4-3 기술기여도 표 재구성 실패: {exc}") from exc
+    applied = doc_fill.apply(pid)
+    return {"rebuilt": rebuilt, "applied": applied}
+
+
+@app.post("/api/projects/{pid}/researcher/sync-blocks")
+def researcher_sync_blocks(pid: str):
+    """7-1 '공동연구개발기관책임자' 프로필 블록(인적사항/학력/경력/실적 등 표 묶음)을
+    공동기관 수만큼 복제/제거한다. 값은 채우지 않고 빈 템플릿으로 두어(개인정보 비수록),
+    사용자가 ③ 입력 그리드에서 Tab 키로 직접 채운다.
+
+    구조편집(순수복원→섹션 문단블록 deepcopy→재추출)이라 수십 초 걸릴 수 있어 별도 버튼으로
+    호출한다. 실패 시 원상복구. 성공 시 tree.json 재생성으로 새 표가 그리드에 바로 뜬다."""
+    _require_project(pid)
+    rebuilt = None
+    try:
+        rebuilt = _sync_researcher_blocks(pid)
+    except Exception as exc:  # noqa: BLE001 - 실패 시 원상복구됨(_apply_structural_doc)
+        raise HTTPException(status_code=500, detail=f"7-1 책임자표 재구성 실패: {exc}") from exc
+    return {"rebuilt": rebuilt}
+
+
+def _sync_researcher_blocks(pid: str) -> dict:
+    """공동책임자 블록 수 = 이름 있는 '공동' 참여기관 수. 주관 블록은 그대로 둔다."""
+    ov = store.read_overview_data(pid)
+    n = len([i for i in (ov.get("institutions") or [])
+             if (i.get("name") or "").strip() and (i.get("role") or "") == "공동"])
+    if n <= 0:
+        return {"changed": False, "reason": "공동기관 없음"}
+    info = tables.rebuild_researcher_blocks(pid, n)
+    if not info.get("ok"):
+        return {"changed": False, "reason": info.get("reason", "실패")}
+    if info.get("before") == info.get("after"):
+        return {"changed": False, "reason": "이미 일치", "count": n}
+    return {"changed": True, "institutions": n, **info}
+
+
+def _sync_contrib_rows(pid: str) -> dict:
+    """4-3 기술기여도 표 데이터 행 수 = 이름 있는 참여기관 수(부족하면 행 복제)."""
+    ov = store.read_overview_data(pid)
+    n = len([i for i in (ov.get("institutions") or []) if (i.get("name") or "").strip()])
+    if n <= 0:
+        return {"changed": False, "reason": "참여기관 없음"}
+    index = pipeline._all_nodes_by_path(pid)
+    tp = doc_fill.contrib_table_path(pid, index)
+    if not tp:
+        return {"changed": False, "reason": "4-3 기술기여도 표 없음"}
+    cur = len(doc_fill.contrib_data_rows(tables._cells_of_table(index, tp)))
+    if cur >= n:
+        return {"changed": False, "reason": "이미 충분", "rows": cur, "institutions": n}
+    added = 0
+    for _ in range(n - cur):   # 마지막 데이터 행 뒤에 한 줄씩 복제(재추출 후 주소 재계산)
+        index = pipeline._all_nodes_by_path(pid)
+        tp = doc_fill.contrib_table_path(pid, index)
+        rows = doc_fill.contrib_data_rows(tables._cells_of_table(index, tp))
+        if not tp or not rows:
+            break
+        tables.add_row(pid, "4-3", tp, rows[-1])
+        added += 1
+    return {"changed": bool(added), "institutions": n, "added": added, "rows": cur + added}
 
 
 # ── 표지 자동채움: RFP 추출 / 기술분류 AI 제안 ───────────────────────────────

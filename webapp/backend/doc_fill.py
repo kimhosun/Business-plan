@@ -765,9 +765,90 @@ def _fill_schedule_23(pid: str, index: dict, ov: dict, edits: list) -> int:
     return filled
 
 
+# ── 4-3 기술기여도 표(기관별 = 정부출연금/총연구개발비 비율, 전 연차 동일) ──────
+def contrib_table_path(pid: str, index: dict) -> str | None:
+    """4-3 '기술기여도' 표 path 를 4-3 노드에 등록된 표로 한정해 찾는다.
+
+    다른 절·작성안내표의 동일 시그니처(1장 요약 내 중첩 복사본 등) 오탐을 막는다."""
+    node = store.node_by_id(pid, "4-3") or {}
+    for cand in (node.get("table_paths") or []):
+        # 셀·문단 분리(예: '연구개발\n기관명')에 영향받지 않게 공백 제거 후 매칭.
+        blob = re.sub(r"\s+", "", " ".join(
+            (c.get("text") or "") for c in tables._cells_of_table(index, cand)))
+        if "기술기여도" in blob and "매출액발생" in blob and "기관명" in blob:
+            return cand
+    return None
+
+
+def contrib_data_rows(cells: list) -> list[int]:
+    """기술기여도 표의 데이터(기관) 행 번호 목록(머리글·소계 제외)."""
+    hdr_row = min((c["row"] for c in cells
+                   if c["col"] >= 1 and int(c.get("colspan", 1) or 1) == 1), default=1)
+    sum_rows = {c["row"] for c in cells if c["col"] == 0
+                and re.search(r"(소?계|합\s*계)", c.get("text", "") or "")}
+    return sorted(c["row"] for c in cells
+                  if c["col"] == 0 and c["row"] > hdr_row and c["row"] not in sum_rows)
+
+
+def _fill_contrib_43(pid: str, index: dict, ov: dict, edits: list) -> int:
+    """4-3 '기술기여도' 표를 참여기관별로 채운다.
+
+    기술기여도 = 정부출연금(A) / 총연구개발비(E) × 100 (협약 비율, 기술료 산정 계수).
+    _funding_breakdown 이 산출한 A·E 를 쓴다 → 영리기업은 유형별 정부지원율(대 50·중견
+    70·중소 80%), 비영리·대학·출연연 등은 기관부담이 없어(부담 0) 100%.
+    표의 열은 '매출액발생 N년차'(기술료 대상 매출연차)로, 계수인 기술기여도는 연차와
+    무관하게 일정하므로 1년차부터 모든 열에 같은 값을 기입한다."""
+    tp = contrib_table_path(pid, index)
+    if not tp:
+        return 0
+    cells = tables._cells_of_table(index, tp)
+    cm = {(c["row"], c["col"]): c["paths"] for c in cells}
+
+    # 값(연차) 열: '기술기여도' 병합 머리글 아래의 개별 연차 셀(col>=1, colspan 1)
+    hdr_row = min((c["row"] for c in cells
+                   if c["col"] >= 1 and int(c.get("colspan", 1) or 1) == 1), default=1)
+    val_cols = sorted({c["col"] for c in cells if c["row"] == hdr_row and c["col"] >= 1})
+    data_rows = contrib_data_rows(cells)   # 데이터(기관) 행 — 머리글·소계 제외
+    if not val_cols or not data_rows:
+        return 0
+
+    insts = ov.get("institutions") or []
+    tmap = _org_type_map(insts)
+    # 기관별 A·E 합(전 차년도 합) — A/E 는 유형별 정부지원율로 일정.
+    agg: dict[str, dict] = defaultdict(lambda: {"A": 0, "E": 0})
+    for f in (ov.get("funding") or []):
+        org = (f.get("org") or "").strip()
+        A = _num(f.get("amount"))
+        if not org or A <= 0:
+            continue
+        bd = _funding_breakdown(A, tmap.get(org, ""))
+        agg[org]["A"] += bd["A"]
+        agg[org]["E"] += bd["E"]
+
+    ordered = [i for i in _ordered_insts(insts) if (i.get("name") or "").strip()]
+    wrote = 0
+    for i, row in enumerate(data_rows):
+        if i >= len(ordered):        # 남는 템플릿 행(AAAAA/BBBBB…)의 예시값 제거
+            _clear(edits, cm, row, 0)
+            for cc in val_cols:
+                _clear(edits, cm, row, cc)
+            continue
+        org = (ordered[i].get("name") or "").strip()
+        _put(edits, cm, row, 0, org)
+        a = agg.get(org)
+        pct = f"{a['A'] / a['E'] * 100:.1f}" if a and a["E"] > 0 else ""
+        for cc in val_cols:
+            if pct:
+                _put(edits, cm, row, cc, pct)
+            else:
+                _clear(edits, cm, row, cc)
+        wrote = 1
+    return wrote
+
+
 # ── 공개 API ─────────────────────────────────────────────────────────────────
 _FILLERS = (_fill_cover, _fill_summary, _fill_team, _fill_budget_81,
-            _fill_budget_82, _fill_budget_83, _fill_schedule_23)
+            _fill_budget_82, _fill_budget_83, _fill_schedule_23, _fill_contrib_43)
 
 
 def apply(pid: str) -> dict:

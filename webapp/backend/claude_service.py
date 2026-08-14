@@ -936,6 +936,9 @@ _REF_IMAGE_GUIDE = (
     "기관 보고서에 실린 사진·그래프·개념도를 그대로 가져온다.\n"
     "- 예: 국외 기술 동향에서 'Seagreen 해상풍력'을 서술했으면 그 단지 사진을, 건설비를 언급했으면 "
     "해상풍력 건설단가 그래프 이미지를 찾아 넣는다.\n"
+    "- 지식재산권(특허) 현황을 표로 정리하는 절에서는, 각 특허의 '대표도면·개념도'를 특허공보"
+    "(KIPRIS·Google Patents 등)에서 찾아 **해당 특허 표 바로 아래**에 같은 형식으로 넣는다. "
+    "이미지는 표 셀 안이 아니라 표 밖 바로 아래 문단에 둔다.\n"
     "- 형식(본문 흐름 속에 한 줄씩, 관련 서술 바로 아래):\n"
     "![그림 제목(무엇인지 알 수 있게)](직접 열리는 이미지 URL)\n"
     "출처: 매체/기관명(연도), 원문 URL\n"
@@ -954,7 +957,8 @@ def _reference_image_nids() -> set[str]:
     raw = os.environ.get("IMAGE_SECTIONS", "").strip()
     if raw:
         return {t.strip() for t in raw.replace(",", " ").split() if t.strip()}
-    return {"1-2", "5-1"}
+    # 1-2·5-1(동향·시장)에 더해 5-2(지식재산권·표준·인증) — 특허 대표도면 등 참조 이미지.
+    return {"1-2", "5-1", "5-2"}
 
 
 def _wants_reference_images(nid: str | None) -> bool:
@@ -1401,6 +1405,75 @@ def table_ai_fill(context_text: str, grid_text: str, empty_cells: list[dict],
         t = str(c.get("text", "") or "").strip()
         if t and (r, col) in allow:
             out.append({"row": r, "col": col, "text": t})
+    return out
+
+
+_ECON_TABLE_SYSTEM = (
+    "당신은 정부 R&D 연구개발계획서 '5-4 경제적 성과 창출계획' 표를 채우는 사업화 전략 편집자다. "
+    "여러 표가 주어지며, 각 표의 '채울 셀' 좌표만 채운다.\n"
+    "표 성격: (가) 매출·시장점유율 전망(국내/해외 × 시장점유율·판매량·판매단가·매출액, 개발 종료 후 1~3년), "
+    "(나) 투자계획(매출원가·판매관리비·자본적지출: 토지·건물·기계장치), "
+    "(다) 사업화 전략(형태/규모·사업화 능력·사업화 계획·기대효과) — 기업별.\n"
+    "규칙:\n"
+    "(1) 헤더·구분 라벨·합계/비율 칸은 바꾸지 않는다. '채울 셀'에 없는 좌표는 출력하지 않는다.\n"
+    "(2) 사업화 전략의 'o 항목 :' 골격 셀은 각 항목 뒤에 값을 채워 **셀 전체 텍스트**로 돌려준다"
+    "(항목 라벨·순서·개행 보존, 예: 'o 사업화 형태 : 자체 양산 및 라이선스\\no 수요처 : 조선·해양 EPC ...').\n"
+    "(3) 수치(시장점유율·판매량·판매단가·매출액·투자액)는 과제 배경·시장으로 합리적 추정치를 제시하되, "
+    "근거가 약하면 값 뒤에 '[확인 필요]'를 붙인다(예 '3.2%[확인 필요]', '1,200[확인 필요]').\n"
+    "(4) 표 내 관계를 지킨다: 국내매출액≈판매량×판매단가, 자본적지출 합계=토지+건물+기계장치, "
+    "연차(1→3년)로 증가 추세. 단위는 머리글을 따른다(백만원/원/$/백만$).\n"
+    "(5) 개조식·간결. 근거 없는 고유 사실(구체 거래처명 등)은 지어내지 말고 일반화하거나 '[확인 필요]'.\n"
+    "출력은 JSON 하나만: {\"cells\":[{\"table\":<정수>,\"row\":<정수>,\"col\":<정수>,\"text\":\"...\"}]}. "
+    "코드펜스 밖 설명 금지."
+)
+
+
+def econ_tables_suggest(context_text: str, tables_payload: list[dict],
+                        instruction: str) -> list[dict]:
+    """5-4 경제적 성과 표(여러 개)의 '채울 셀'을 제안한다 → [{table,row,col,text}] (실패 시 []).
+
+    tables_payload = [{index, grid, fillable:[{row,col,current}]}]. 골격('o 항목:') 셀은
+    current 를 함께 줘 라벨을 보존해 완성하게 한다. 허용 좌표 밖 응답은 폐기한다."""
+    allow: set = set()
+    blocks: list[str] = []
+    for tp in (tables_payload or []):
+        try:
+            ti = int(tp.get("index"))
+        except Exception:  # noqa: BLE001
+            continue
+        blocks.append(f"[표 {ti} — 현재 내용(행\t열\t값)]\n{(tp.get('grid') or '')[:4000]}")
+        fl: list[str] = []
+        for c in (tp.get("fillable") or []):
+            try:
+                r, col = int(c["row"]), int(c["col"])
+            except Exception:  # noqa: BLE001
+                continue
+            allow.add((ti, r, col))
+            cur = (c.get("current") or "").replace("\n", "\\n").strip()
+            fl.append(f"(r{r},c{col})" + (f' 현재="{cur}"' if cur else ""))
+        blocks.append("채울 셀: " + ", ".join(fl))
+    if not allow:
+        return []
+    user = (
+        f"[과제 배경]\n{(context_text or '')[:5000]}\n\n"
+        + "\n\n".join(blocks)
+        + f"\n\n[지시]\n{(instruction or '').strip() or '5-4 경제적 성과 표를 과제 내용에 맞게 채워라.'}\n\n"
+        "각 표의 '채울 셀'만 채운 JSON 을 제안하라. 'o 항목:' 골격 셀은 항목 뒤에 값을 넣어 셀 전체 텍스트로 돌려줘라."
+    )
+    try:
+        raw = _ask(_ECON_TABLE_SYSTEM, [{"role": "user", "content": user}], max_tokens=3000)
+    except Exception:  # noqa: BLE001
+        return []
+    obj = _parse_json_obj(raw)
+    out: list[dict] = []
+    for c in (obj.get("cells") if isinstance(obj, dict) else None) or []:
+        try:
+            ti, r, col = int(c.get("table")), int(c.get("row")), int(c.get("col"))
+        except Exception:  # noqa: BLE001
+            continue
+        t = str(c.get("text", "") or "").strip()
+        if t and (ti, r, col) in allow:
+            out.append({"table": ti, "row": r, "col": col, "text": t})
     return out
 
 

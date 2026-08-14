@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>연구개발계획서 작성 웹서비스</title>
-  <link rel="stylesheet" href="styles.css?v=20260814e" />
+  <link rel="stylesheet" href="styles.css?v=20260814f" />
 </head>
 <body>
   <!-- 상단바 -->
@@ -194,6 +194,8 @@
               <span class="tables-title">📊 표 입력 (엑셀형) — 저장 후 [hwpx 빌드] 하면 표로 반영됩니다</span>
               <span class="tables-actions">
                 <button id="btn-tables-save" class="btn btn-primary">표 저장</button>
+                <button id="btn-tables-ai-econ" class="btn btn-secondary" type="button" hidden
+                        title="5-4 경제적 성과 표(매출전망·투자계획·사업화전략)의 빈 칸과 'o 항목:' 골격을 AI가 한 번에 제안합니다(수치 추정은 근거가 약하면 [확인 필요] 표기). 검토·수정 후 [표 저장].">✨ 5-4 표 AI 제안</button>
                 <a id="btn-tables-xlsx" class="btn btn-secondary" href="#" download>엑셀 내려받기</a>
                 <label class="btn btn-secondary" for="tables-xlsx-file" style="margin:0">엑셀 올리기
                   <input type="file" id="tables-xlsx-file" accept=".xlsx" hidden />
@@ -297,8 +299,12 @@
                     title="8.1 지원·부담계획 표를 현재 단계 수에 맞춰 자동 재구성하고 채웁니다(구조 변경, 수십 초 소요)">8.1 표 단계 반영</button>
             <button id="btn-usage-sync" class="btn-mini2" type="button"
                     title="8.2 비목별 사용계획 총괄표(표1)를 참여기관 수만큼 복제·정리하고, 각 총괄표에 기관별 연차별 연구개발비 총액을 채웁니다(구조 변경, 수십 초 소요). 하위표(인건비·학생인건비)는 표별 AI로 채우세요.">8.2 총괄표 기관·연차 반영</button>
+            <button id="btn-contrib-sync" class="btn-mini2" type="button"
+                    title="4-3 기술기여도 표의 행을 참여기관 수만큼 늘리고, 기관별 기술기여도(=정부출연금/총연구개발비, 비영리 100%)를 전 연차에 채웁니다(구조 변경, 수십 초 소요)">4-3 기술기여도 기관수 반영</button>
+            <button id="btn-researcher-sync" class="btn-mini2" type="button"
+                    title="7-1 공동연구개발기관책임자 프로필 표(인적사항·학력·경력·실적 등)를 공동기관 수만큼 복제합니다. 값은 비워 두니 7-1 절 ③ 입력에서 Tab 키로 채우세요(구조 변경, 수십 초 소요)">7-1 공동책임자표 기관수 반영</button>
           </div>
-          <div class="ovm-hint-inline">참여기관·연차를 입력하면 자동 생성 · 표지 정부지원비 및 8.1 표에 반영</div>
+          <div class="ovm-hint-inline">참여기관·연차를 입력하면 자동 생성 · 표지 정부지원비·8.1 표·4-3 기술기여도에 반영</div>
           <div id="fund-grid-wrap" class="fund-grid-wrap"></div>
         </div>
 
@@ -502,6 +508,6 @@
   <!-- 토스트 -->
   <div id="toast" class="toast hidden"></div>
 
-  <script src="app.js?v=20260814e"></script>
+  <script src="app.js?v=20260814f"></script>
 </body>
 </html>

@@ -137,8 +137,12 @@ const API = {
   fillAllTables: (pid) => api(`/api/projects/${pid}/tables/fill-all`, { method: "POST" }),
   budgetSyncDetail: (pid) => api(`/api/projects/${pid}/budget/sync-detail`, { method: "POST" }),
   budgetSyncUsage: (pid) => api(`/api/projects/${pid}/budget/sync-usage`, { method: "POST" }),
+  contribSyncRows: (pid) => api(`/api/projects/${pid}/contrib/sync-rows`, { method: "POST" }),
+  researcherSyncBlocks: (pid) => api(`/api/projects/${pid}/researcher/sync-blocks`, { method: "POST" }),
   tableAiFill: (pid, nid, table_index, instruction) =>
     api(`/api/projects/${pid}/nodes/${nid}/tables/ai-fill`, postJson({ table_index, instruction })),
+  tablesAiFillEcon: (pid, nid, instruction) =>
+    api(`/api/projects/${pid}/nodes/${nid}/tables/ai-fill-econ`, postJson({ instruction })),
 };
 
 /* ------------------------------------------------------------------ */
@@ -409,6 +413,12 @@ function cleanTitle(t) {
   return String(t || "").split("※")[0].trim();
 }
 
+// 순수 정수 라벨(장 번호 1, 2 …)에는 마침표를 붙인다. 절 번호(1.1)는 그대로.
+function fmtLabel(label) {
+  const s = String(label || "").trim();
+  return /^\d+$/.test(s) ? s + "." : s;
+}
+
 function renderTree() {
   const box = $("#tree");
   box.innerHTML = "";
@@ -428,7 +438,7 @@ function renderTree() {
           wrap.classList.toggle("collapsed");
         },
       },
-      [caret, el("span", { class: "tree-num", text: chap.label }), el("span", { class: "tree-title-txt", text: cleanTitle(chap.title) })]
+      [caret, el("span", { class: "tree-num", text: fmtLabel(chap.label) }), el("span", { class: "tree-title-txt", text: cleanTitle(chap.title) })]
     );
 
     const childBox = el("div", { class: "tree-children" });
@@ -443,7 +453,7 @@ function renderTree() {
 
 function makeLeaf(node, isChapter) {
   const kids = [
-    el("span", { class: "tree-num", text: node.label }),
+    el("span", { class: "tree-num", text: fmtLabel(node.label) }),
     el("span", { class: "tree-title-txt", text: cleanTitle(node.title) }),
   ];
   const leaf = el(
@@ -1966,6 +1976,61 @@ async function budgetSyncUsage() {
   }
 }
 
+// 4-3 기술기여도 표의 행을 참여기관 수만큼 늘리고 기관별 기술기여도를 전 연차에 채운다(구조편집).
+async function contribSyncRows() {
+  if (!state.pid) { toast("프로젝트를 먼저 열어 주세요.", "err"); return; }
+  const btn = $("#btn-contrib-sync");
+  await saveOverview({ silent: true });
+  setOverviewStatus("4-3 기술기여도 표 구조 재구성 중… (수십 초 소요, 표 구조 변경)", "busy");
+  if (btn) btn.disabled = true;
+  try {
+    const res = await API.contribSyncRows(state.pid);
+    const rb = res && res.rebuilt;
+    if (rb && rb.changed) {
+      toast(`4-3 기술기여도 표를 참여기관 ${rb.institutions}개에 맞춰 ${rb.added}행 추가하고 값을 채웠습니다.`, "ok");
+      setOverviewStatus(`4-3 기술기여도 ${rb.institutions}개 기관 반영 완료`, "ok");
+    } else {
+      const why = rb && rb.reason ? ` (${rb.reason})` : "";
+      toast("4-3 기술기여도 표 행이 이미 충분합니다(값은 갱신).", "ok");
+      setOverviewStatus("4-3 기술기여도 일치 — 값 갱신" + why, "ok");
+    }
+  } catch (e) {
+    toast("4-3 기술기여도 표 재구성 실패: " + e.message, "err");
+    setOverviewStatus("4-3 기술기여도 표 재구성 실패: " + e.message, "err");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// 7-1 '공동연구개발기관책임자' 프로필 블록(인적사항/학력/경력/실적 등 표 묶음)을 공동기관 수만큼
+// 복제/제거한다(구조편집). 값은 채우지 않고 빈 템플릿 → ③ 입력 그리드에서 Tab 으로 직접 채운다.
+async function researcherSyncBlocks() {
+  if (!state.pid) { toast("프로젝트를 먼저 열어 주세요.", "err"); return; }
+  const btn = $("#btn-researcher-sync");
+  await saveOverview({ silent: true });
+  setOverviewStatus("7-1 책임자표 구조 재구성 중… (수십 초 소요, 표 구조 변경)", "busy");
+  if (btn) btn.disabled = true;
+  try {
+    const res = await API.researcherSyncBlocks(state.pid);
+    const rb = res && res.rebuilt;
+    if (rb && rb.changed) {
+      toast(`7-1 공동책임자 표를 공동기관 ${rb.institutions}개에 맞춰 ${rb.after}개로 조정했습니다. 7-1 절 ③ 입력에서 Tab 으로 채우세요.`, "ok");
+      setOverviewStatus(`7-1 공동책임자 표 ${rb.after}개 반영 완료`, "ok");
+      // 현재 열려 있는 절이 7-1 이면 표 그리드를 다시 로드해 새 블록을 즉시 노출.
+      if (state.nid === "7-1") { try { await loadTables("7-1"); } catch (e) { /* noop */ } }
+    } else {
+      const why = rb && rb.reason ? ` (${rb.reason})` : "";
+      toast("7-1 공동책임자 표가 이미 공동기관 수와 일치합니다." + why, "ok");
+      setOverviewStatus("7-1 공동책임자 표 일치" + why, "ok");
+    }
+  } catch (e) {
+    toast("7-1 책임자표 재구성 실패: " + e.message, "err");
+    setOverviewStatus("7-1 책임자표 재구성 실패: " + e.message, "err");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 // 요약문 '연구개발 목표 및 내용'(최종목표+연차별 목표·개발내용)을 AI 가 제안해 빈 칸을 채움.
 async function summarySuggestAi() {
   if (!state.pid) { toast("프로젝트를 먼저 열어 주세요.", "err"); return; }
@@ -2192,6 +2257,8 @@ async function loadTables(nid) {
     tablesState.data = data;
     Object.entries(fres.formulas || {}).forEach(([k, v]) => tablesState.formulas.set(k, v));
     wrap.hidden = false;
+    // 5-4(경제적 성과) 절에서만 표 일괄 AI 제안 버튼 노출.
+    $("#btn-tables-ai-econ").hidden = !/^5-4($|-)/.test(String(nid));
     $("#btn-tables-xlsx").href = API.tablesXlsxUrl(state.pid, nid);
     renderTables(data);
   } catch (_) {
@@ -2401,6 +2468,34 @@ async function runTableAiFill(ti, instruction, btn) {
   }
 }
 
+// 5-4 경제적 성과 표 전체(매출전망·투자계획·사업화전략)를 AI로 일괄 제안한다(빈 칸+골격 셀, 미저장).
+async function runEconTablesFill(btn) {
+  if (!state.pid || !state.nid) { toast("절을 먼저 여세요.", "err"); return; }
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = "생성 중… (수십 초)";
+  try {
+    const res = await API.tablesAiFillEcon(state.pid, state.nid, "");
+    const edits = (res && res.edits) || [];
+    let applied = 0;
+    edits.forEach((e) => {
+      const ap = (e.paths && e.paths[0]) || "";
+      // 골격/빈 칸 모두 덮어씀(백엔드가 채움 대상만 반환). 헤더·수식 칸은 대상 아님.
+      const td = ap && $(`#tables-grids td[data-ti="${e.table}"][data-anchor="${ap}"]`);
+      if (td && !tablesState.formulas.has(ap)) {
+        td.textContent = e.text;
+        markDirty(td, e.text);
+        applied++;
+      }
+    });
+    if (applied) toast(`AI가 5-4 표의 ${applied}개 셀을 제안했습니다. 검토·수정 후 [표 저장]하세요.`, "ok");
+    else toast("채울 셀이 없거나 제안이 없습니다.", "ok");
+  } catch (e) {
+    toast("5-4 표 AI 제안 실패: " + e.message, "err");
+  } finally {
+    btn.disabled = false; btn.textContent = label;
+  }
+}
+
 function gridKeydown(e) {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
@@ -2408,6 +2503,27 @@ function gridKeydown(e) {
     const idx = Array.from(tr.children).indexOf(td);
     const nextRow = tr.nextElementSibling;
     if (nextRow && nextRow.children[idx]) nextRow.children[idx].focus();
+    return;
+  }
+  if (e.key === "Tab") {
+    // 표 셀 간 Tab 이동: 편집 가능한 다음/이전 셀로(문서 순서 = 행 끝→다음 행, 표 끝→다음 표).
+    const cells = Array.from(
+      document.querySelectorAll('#tables-grids td[contenteditable="true"]'));
+    const i = cells.indexOf(e.target);
+    if (i < 0) return;
+    const j = e.shiftKey ? i - 1 : i + 1;
+    if (j < 0 || j >= cells.length) return;   // 그리드 처음/끝에서는 기본 동작(밖으로)
+    e.preventDefault();
+    const nx = cells[j];
+    nx.focus();
+    // 스프레드시트처럼 셀 내용 전체 선택 → 곧바로 타이핑하면 덮어쓰기(빠른 채움).
+    const sel = window.getSelection && window.getSelection();
+    if (sel) {
+      const range = document.createRange();
+      range.selectNodeContents(nx);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
   }
 }
 
@@ -2493,6 +2609,8 @@ function bindEvents() {
   $("#btn-budget-sync").addEventListener("click", budgetSyncStages);
   $("#btn-detail-sync").addEventListener("click", budgetSyncDetail);
   $("#btn-usage-sync").addEventListener("click", budgetSyncUsage);
+  $("#btn-contrib-sync").addEventListener("click", contribSyncRows);
+  { const b = $("#btn-researcher-sync"); if (b) b.addEventListener("click", researcherSyncBlocks); }
   // 배경(오버레이) 클릭으로 닫기
   $("#overview-modal").addEventListener("mousedown", (e) => {
     if (e.target.id === "overview-modal") closeOverviewModal(true);
@@ -2608,6 +2726,7 @@ function bindEvents() {
   $("#btn-prompts-save").addEventListener("click", savePrompts);
   $("#btn-preset-load").addEventListener("click", loadPreset);
   $("#btn-tables-save").addEventListener("click", saveTables);
+  $("#btn-tables-ai-econ").addEventListener("click", (e) => runEconTablesFill(e.currentTarget));
   $("#tables-xlsx-file").addEventListener("change", (e) => {
     const f = e.target.files && e.target.files[0];
     if (f) importTablesXlsx(f);

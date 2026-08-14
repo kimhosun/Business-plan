@@ -701,8 +701,8 @@ select.ov-input { height: 27px; }
 .tree-leaf {
   display: flex;
   gap: 8px;
-  /* 하위 절(1.1, 1.2 …)은 뒤로 들여쓴다(장 제목보다 뒤). */
-  padding: 7px 12px 7px 40px;
+  /* 하위 절(1.1, 1.2 …)은 장 노드(1)보다 한 단계 더 들여쓴다. */
+  padding: 7px 12px 7px 52px;
   cursor: pointer;
   font-size: 13px;
   border-left: 3px solid transparent;
@@ -713,9 +713,8 @@ select.ov-input { height: 27px; }
   border-left-color: var(--primary);
   font-weight: 600;
 }
-/* 장 제목(1, 2 …)은 앞으로 내어쓴다(하위 절보다 앞) — 계층을 또렷하게. */
-.tree-leaf.chapter-leaf { padding-left: 8px; font-weight: 600; }
-.tree-leaf.chapter-leaf .tree-num { min-width: 18px; }
+/* 장 노드(1. …)는 장 헤더 아래로 한 단계 들여쓰고, 하위 절은 그보다 더 들여쓴다. */
+.tree-leaf.chapter-leaf { padding-left: 32px; font-weight: 600; }
 .tree-title-txt {
   overflow: hidden;
   text-overflow: ellipsis;

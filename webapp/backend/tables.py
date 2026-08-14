@@ -610,6 +610,60 @@ def rebuild_budget_detail(pid: str, target_n: int, detail_paths: list[str]) -> d
     return _apply_structural_doc(pid, mutate, pure=True)
 
 
+# ── 7-1 공동연구개발기관책임자 프로필 블록: 공동기관 수만큼 복제/제거 ──────────
+def rebuild_researcher_blocks(pid: str, target_n: int) -> dict:
+    """7-1 '공동연구개발기관책임자' 프로필 블록을 공동기관 수(target_n)에 맞춰 복제/제거한다.
+
+    한 블록 = 제목 문단 + 인적사항/학력/경력/국가R&D실적/논문·저서/지식재산권/수상/국외지원
+    표 묶음(소제목·표·빈 문단 포함). 블록 경계는 '공동연구개발기관책임자' 제목 문단부터
+    '참여연구자'(총괄) 문단 직전까지(경계 판정은 표를 품지 않은 순수 제목 문단 텍스트로만).
+    섹션 직속 문단 구간을 lxml deepcopy 로 통째 복제(마지막 블록=템플릿, 앞으로 붙임)하거나
+    초과분을 제거한다. pure 복원으로 좌표를 맞춘 뒤 수행하며 실패 시 롤백. 값은 비운 채(템플릿
+    그대로) 두어 사용자가 그리드에서 직접 채운다. 성공 시 새 표가 ③ 입력 그리드에 뜨도록
+    tree.json(절별 table_paths)을 재생성한다."""
+    target_n = max(1, int(target_n))     # 최소 1(공동 템플릿 블록 보존 — 삭제 시 재추가 불가)
+
+    def mutate(doc):
+        for si, sec in enumerate(doc.sections):
+            kids = [c for c in list(sec.element) if c.tag.endswith("}p")]
+            # 경계·헤딩 판정: 표를 품은 문단은 셀 텍스트 오탐 방지를 위해 "" 처리.
+            texts = ["" if _H._has_table_el(p) else _norm_txt(_H._p_text_el(p))
+                     for p in kids]
+            start = next((i for i, t in enumerate(texts)
+                          if "공동연구개발기관책임자" in t), None)
+            if start is None:
+                continue
+            bound = next((i for i in range(start, len(texts))
+                          if "참여연구자" in texts[i]), None)
+            if bound is None:
+                return {"ok": False, "reason": "참여연구자 총괄 경계 없음",
+                        "before": 0, "after": 0}
+            heads = [i for i in range(start, bound)
+                     if "공동연구개발기관책임자" in texts[i]]
+            cur = len(heads)
+            boundary_el = kids[bound]
+            if target_n > cur:
+                tpl = kids[heads[-1]:bound]            # 마지막 블록 = 복제 템플릿
+                for _ in range(target_n - cur):
+                    for e in tpl:
+                        clone = copy.deepcopy(e)
+                        _regen_ids(clone)
+                        boundary_el.addprevious(clone)   # 참여연구자 총괄 직전에 순서대로 삽입
+            elif target_n < cur:
+                for e in kids[heads[target_n]:bound]:  # 초과 블록(문단 구간) 제거
+                    par = e.getparent()
+                    if par is not None:
+                        par.remove(e)
+            return {"ok": True, "before": cur, "after": target_n, "sections": [si]}
+        return {"ok": False, "reason": "공동책임자 블록 없음", "before": 0, "after": 0}
+
+    info = _apply_structural_doc(pid, mutate, pure=True)
+    if info.get("ok") and info.get("before") != info.get("after"):
+        # 표 개수가 바뀌었으니 절별 table_paths(tree.json)를 재생성 → 그리드 즉시 반영.
+        store._write_json(store._tree_json(pid), build_tree(str(store.yaml_dir(pid))))
+    return info
+
+
 def _c1_text(tr) -> str:
     for tc in _tcs(tr):
         if _addr(tc)[0] == 1:
