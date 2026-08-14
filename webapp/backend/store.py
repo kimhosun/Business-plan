@@ -497,6 +497,35 @@ def _overview_serialize(data: dict) -> str:
             if seg:
                 lines.append("- " + " · ".join(seg))
 
+    # 청년 일자리 창출(3-4절): 영리기업(대기업·중견·중소)은 정부출연금 5억원당 청년 1명 채용.
+    # 정부출연금 그리드는 '천원' 단위 → 5억원 = 500,000천원, 1억원 = 100,000천원.
+    def _digits(s) -> int:
+        d = "".join(ch for ch in str(s or "") if ch.isdigit())
+        return int(d) if d else 0
+    _profit = {"대기업", "중견기업", "중소기업"}
+    _type_by_org = {(i.get("name") or "").strip(): (i.get("type") or "").strip()
+                    for i in insts if (i.get("name") or "").strip()}
+    _tot_by_org: dict[str, int] = {}
+    for f in funds:
+        org = (f.get("org") or "").strip()
+        if org:
+            _tot_by_org[org] = _tot_by_org.get(org, 0) + _digits(f.get("amount"))
+    _job_lines: list[str] = []
+    _job_total = 0
+    for org, tot in _tot_by_org.items():
+        typ = _type_by_org.get(org, "")
+        if typ in _profit and tot > 0:
+            n = tot // 500000
+            _job_lines.append(
+                f"- {org}({typ}): 정부출연금 {tot / 100000:.1f}억원 → 청년 {n}명 채용")
+            _job_total += n
+    if _job_lines:
+        lines.append("[청년 일자리 창출 제안(3-4절 반영) — 영리기업 정부출연금 5억원당 청년 1명]")
+        lines.append("- 규칙: 영리기업(대기업·중견·중소)은 정부출연금 5억원당 청년 1명 이상 신규채용"
+                     "(비영리·대학·출연연 등은 의무 없음)")
+        lines.extend(_job_lines)
+        lines.append(f"- 영리기업 청년 채용 합계(제안): {_job_total}명")
+
     goal = (data.get("goal") or "").strip()
     if goal:
         lines.append("[주요 연구 목표·내용]")

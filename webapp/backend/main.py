@@ -730,6 +730,22 @@ def _sync_budget_detail(pid: str) -> dict:
     return {"changed": True, "institutions": n, **(info or {})}
 
 
+@app.post("/api/projects/{pid}/tables/fill-all")
+def fill_all_tables(pid: str):
+    """모든 절의 작성 결과(마크다운 표)를 문서의 기존 표에 흡수해 웹 그리드·소스에 반영한다.
+
+    빌드와 동일한 표 흡수 로직을 표 전용 모드로 실행해 새 source 로 굽고(bake) yaml·tree 를
+    재생성한다. 구조 재구성이라 수십 초 걸릴 수 있어 별도 버튼으로 호출한다. 실패 시 원상복구.
+    빌드 직전 채우는 표지·요약문·편성도·연구비 표(doc_fill)도 함께 반영한다."""
+    _require_project(pid)
+    try:
+        filled = doc_fill.apply(pid)          # 제반사항 정형 표(표지·요약문·편성도·연구비) 먼저
+        baked = tables.fill_all_tables(pid)   # 작성된 md 표 → 기존 표 흡수(bake)
+    except Exception as exc:  # noqa: BLE001 - 실패 시 원상복구됨(tables.fill_all_tables)
+        raise HTTPException(status_code=500, detail=f"표 채우기 실패: {exc}") from exc
+    return {"baked": baked, "applied": filled}
+
+
 @app.post("/api/projects/{pid}/budget/sync-usage")
 def budget_sync_usage(pid: str):
     """8-2 비목별 사용계획 총괄표(표1)를 참여기관 수만큼 복제/제거 후, 각 총괄표에

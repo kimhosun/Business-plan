@@ -123,11 +123,30 @@ html, body {
 /* ---------- 레이아웃 2열 ---------- */
 .layout {
   display: grid;
-  grid-template-columns: 300px 1fr;
+  /* 좌(목차) · 드래그 손잡이 · 우(편집). 목차 폭은 --tree-w 로 드래그 조절. */
+  grid-template-columns: var(--tree-w, 300px) 6px 1fr;
   gap: 0;
   height: calc(100vh - 57px);
   min-height: 0;
 }
+.col-resizer {
+  cursor: col-resize;
+  background: var(--border);
+  position: relative;
+  z-index: 15;
+  transition: background .12s;
+}
+/* 손잡이 히트 영역을 넓혀 잡기 쉽게(보이는 폭은 그대로) */
+.col-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0; bottom: 0; left: -4px; right: -4px;
+}
+.col-resizer:hover,
+.col-resizer.dragging { background: var(--primary); }
+body.col-resizing { cursor: col-resize; user-select: none; }
+body.col-resizing .col-left,
+body.col-resizing .col-right { pointer-events: none; }
 .col-left {
   background: var(--surface);
   border-right: 1px solid var(--border);
@@ -682,7 +701,8 @@ select.ov-input { height: 27px; }
 .tree-leaf {
   display: flex;
   gap: 8px;
-  padding: 7px 12px 7px 30px;
+  /* 하위 절(1.1, 1.2 …)은 뒤로 들여쓴다(장 제목보다 뒤). */
+  padding: 7px 12px 7px 40px;
   cursor: pointer;
   font-size: 13px;
   border-left: 3px solid transparent;
@@ -693,7 +713,9 @@ select.ov-input { height: 27px; }
   border-left-color: var(--primary);
   font-weight: 600;
 }
-.tree-leaf.chapter-leaf { padding-left: 12px; }
+/* 장 제목(1, 2 …)은 앞으로 내어쓴다(하위 절보다 앞) — 계층을 또렷하게. */
+.tree-leaf.chapter-leaf { padding-left: 8px; font-weight: 600; }
+.tree-leaf.chapter-leaf .tree-num { min-width: 18px; }
 .tree-title-txt {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -788,6 +810,29 @@ select.ov-input { height: 27px; }
   margin: 12px 0 6px;
 }
 .field-label:first-child { margin-top: 0; }
+
+/* ---------- 접기/펴기(②작성 프롬프트·③입력 제목 클릭) ---------- */
+.collapsible { cursor: pointer; user-select: none; }
+.collapsible::before {
+  content: "▾";
+  display: inline-block;
+  width: 1em;
+  margin-right: 2px;
+  font-size: 0.82em;
+  color: var(--text-muted);
+  transition: transform .12s;
+}
+.collapsible.collapsed::before { content: "▸"; }
+.collapsible:hover { color: var(--text); }
+/* 라벨 제목 → 바로 아래 내용 숨김 */
+.collapsed-content { display: none !important; }
+/* 섹션 제목만 남기고 본문 숨김 */
+.style-group.sec-collapsed > :not(.style-part-title),
+.reg-ref.sec-collapsed > :not(.reg-ref-head),
+.rfp-ref.sec-collapsed > :not(.rfp-ref-head),
+.chat-box.sec-collapsed > :not(.chat-head) { display: none; }
+/* 접힌 섹션 헤더는 아래 여백 축소 */
+.style-group.sec-collapsed { padding-bottom: 8px; }
 
 textarea {
   width: 100%;

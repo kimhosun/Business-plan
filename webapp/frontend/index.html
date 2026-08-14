@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>연구개발계획서 작성 웹서비스</title>
-  <link rel="stylesheet" href="styles.css?v=20260813a" />
+  <link rel="stylesheet" href="styles.css?v=20260814e" />
 </head>
 <body>
   <!-- 상단바 -->
@@ -22,6 +22,8 @@
       <button id="btn-new-project" class="btn btn-secondary">기본 문서로 새 프로젝트</button>
       <button id="btn-skills-open" class="btn btn-secondary"
               title="작성 노하우·규칙을 '스킬'로 저장해 두면, 대화창 질문과 관련된 스킬이 자동으로 적용됩니다">🧰 스킬</button>
+      <button id="btn-fill-tables" class="btn btn-secondary" disabled
+              title="모든 절에 작성된 표(마크다운)를 문서의 기존 표에 한꺼번에 채웁니다. 구조 재구성이라 수십 초 걸릴 수 있고, 실패 시 자동 복구됩니다.">📊 표 채우기</button>
       <button id="btn-build" class="btn btn-primary" disabled>hwpx 빌드</button>
       <span id="build-links" class="build-links hidden">
         <a id="link-download" class="link" href="#" target="_blank" rel="noopener">⬇ hwpx 다운로드</a>
@@ -65,6 +67,10 @@
         <p class="placeholder">프로젝트를 선택하거나 새로 만드세요.</p>
       </nav>
     </aside>
+
+    <!-- 좌우 폭 조절 손잡이(드래그) -->
+    <div class="col-resizer" id="col-resizer" role="separator" aria-orientation="vertical"
+         tabindex="0" title="드래그하여 목차 너비 조절 (더블클릭: 기본값)"></div>
 
     <!-- 우: 편집 패널 -->
     <section class="col-right" id="col-right">
@@ -285,10 +291,10 @@
         <div class="ovm-section">
           <div class="ov-label-row">
             <span class="ovm-section-title">정부출연금 (단위: 천원)</span>
-            <button id="btn-budget-sync" class="btn-mini2" type="button"
-                    title="8.1 지원·부담계획 표를 현재 단계 수에 맞춰 자동 재구성하고 채웁니다(구조 변경, 수십 초 소요)">8.1 표 단계 반영</button>
             <button id="btn-detail-sync" class="btn-mini2" type="button"
                     title="8장 비목별 세부 사용계획 표를 참여기관 수만큼 복제하고 연구개발비 총액을 채웁니다(구조 변경, 수십 초 소요)">8장 세부표 기관수 반영</button>
+            <button id="btn-budget-sync" class="btn-mini2" type="button"
+                    title="8.1 지원·부담계획 표를 현재 단계 수에 맞춰 자동 재구성하고 채웁니다(구조 변경, 수십 초 소요)">8.1 표 단계 반영</button>
             <button id="btn-usage-sync" class="btn-mini2" type="button"
                     title="8.2 비목별 사용계획 총괄표(표1)를 참여기관 수만큼 복제·정리하고, 각 총괄표에 기관별 연차별 연구개발비 총액을 채웁니다(구조 변경, 수십 초 소요). 하위표(인건비·학생인건비)는 표별 AI로 채우세요.">8.2 총괄표 기관·연차 반영</button>
           </div>
@@ -496,6 +502,6 @@
   <!-- 토스트 -->
   <div id="toast" class="toast hidden"></div>
 
-  <script src="app.js?v=20260813a"></script>
+  <script src="app.js?v=20260814e"></script>
 </body>
 </html>

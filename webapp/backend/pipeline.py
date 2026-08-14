@@ -72,12 +72,15 @@ def restore(
     out: str | Path,
     template_path: str | Path | None = None,
     pure: bool = False,
+    only_tables: bool = False,
 ) -> str:
     """채워진 yaml 을 원본 hwpx 에 오버레이 → 최종 hwpx (yaml2hwpx.py restore).
 
     pure=True 면 모든 후처리(글꼴·표레이아웃·출처취합·내어쓰기·MD표/그림)를 끄고 **순수 왕복**한다.
     후처리는 문단 개수를 바꿔 좌표(sX/pY) 를 흔들 수 있어, 구조편집(행/열)처럼 좌표 해석이 필요한
-    작업 전에는 pure 로 복원해야 resolve_table 이 맞는다."""
+    작업 전에는 pure 로 복원해야 resolve_table 이 맞는다.
+    only_tables=True 면 **마크다운 표 → 기존 표 흡수만** 켜고 글꼴·레이아웃·출처취합·내어쓰기·
+    그림 등 나머지 후처리는 모두 끈다(표 채움 결과를 소스에 되굽기(bake) 할 때 서식 부작용 방지)."""
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
     args = [
@@ -95,6 +98,15 @@ def restore(
                    "HWPX_HANGING_INDENT", "HWPX_MD_TABLES", "HWPX_MD_IMAGES",
                    "HWPX_VERIFY_MARKS"):
             env[_k] = "0"
+        _run(args, env=env)
+        return str(out)
+    if only_tables:
+        # 표 흡수만: md표→기존표 채움(+템플릿 채움)만 켜고 나머지 후처리는 끈다.
+        for _k in ("HWPX_APPLY_FONTS", "HWPX_TABLE_LAYOUT", "HWPX_COLLECT_SOURCES",
+                   "HWPX_HANGING_INDENT", "HWPX_MD_IMAGES", "HWPX_VERIFY_MARKS"):
+            env[_k] = "0"
+        env["HWPX_MD_TABLES"] = "1"
+        env["HWPX_FILL_TEMPLATES"] = "1"
         _run(args, env=env)
         return str(out)
     # 최종 문서 글꼴 강제: 본문=돋움체 12pt, 표 셀=돋움 8pt (환경변수로 조정 가능).

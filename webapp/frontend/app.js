@@ -134,6 +134,7 @@ const API = {
   }),
   summarySuggest: (pid) => api(`/api/projects/${pid}/summary/suggest`, { method: "POST" }),
   budgetSyncStages: (pid) => api(`/api/projects/${pid}/budget/sync-stages`, { method: "POST" }),
+  fillAllTables: (pid) => api(`/api/projects/${pid}/tables/fill-all`, { method: "POST" }),
   budgetSyncDetail: (pid) => api(`/api/projects/${pid}/budget/sync-detail`, { method: "POST" }),
   budgetSyncUsage: (pid) => api(`/api/projects/${pid}/budget/sync-usage`, { method: "POST" }),
   tableAiFill: (pid, nid, table_index, instruction) =>
@@ -305,6 +306,7 @@ async function openProject(pid) {
   state.node = null;
   state.rfp = null;
   $("#btn-build").disabled = false;
+  $("#btn-fill-tables").disabled = false;
   $("#build-links").classList.add("hidden");
   updateDelButton();
   showNodeEmpty();
@@ -362,6 +364,7 @@ async function deleteProject() {
       state.node = null;
       state.rfp = null;
       $("#btn-build").disabled = true;
+      $("#btn-fill-tables").disabled = true;
       $("#build-links").classList.add("hidden");
       showNodeEmpty();
       $("#tree").innerHTML = "";
@@ -401,6 +404,11 @@ async function loadTree() {
   }
 }
 
+// 절 제목에서 '※ …'(작성요령 안내) 부분을 떼어 낸 순수 제목만 표시한다.
+function cleanTitle(t) {
+  return String(t || "").split("※")[0].trim();
+}
+
 function renderTree() {
   const box = $("#tree");
   box.innerHTML = "";
@@ -420,7 +428,7 @@ function renderTree() {
           wrap.classList.toggle("collapsed");
         },
       },
-      [caret, el("span", { class: "tree-num", text: chap.label }), el("span", { class: "tree-title-txt", text: chap.title || "" })]
+      [caret, el("span", { class: "tree-num", text: chap.label }), el("span", { class: "tree-title-txt", text: cleanTitle(chap.title) })]
     );
 
     const childBox = el("div", { class: "tree-children" });
@@ -436,7 +444,7 @@ function renderTree() {
 function makeLeaf(node, isChapter) {
   const kids = [
     el("span", { class: "tree-num", text: node.label }),
-    el("span", { class: "tree-title-txt", text: node.title || "" }),
+    el("span", { class: "tree-title-txt", text: cleanTitle(node.title) }),
   ];
   const leaf = el(
     "div",
@@ -481,7 +489,7 @@ function renderNode(node) {
   $("#node-empty").classList.add("hidden");
   $("#node-view").classList.remove("hidden");
 
-  $("#node-title").textContent = (node.label ? node.label + "  " : "") + (node.title || "");
+  $("#node-title").textContent = (node.label ? node.label + "  " : "") + cleanTitle(node.title);
   const cnt = node.node_count != null ? node.node_count : node.content_count;
   $("#node-meta").textContent = cnt != null ? `대상 문단 ${cnt}개` : "";
 
@@ -547,6 +555,45 @@ function renderNode(node) {
 function switchTab(name) {
   $$(".tab").forEach((t) => t.classList.toggle("active", t.getAttribute("data-tab") === name));
   $$(".panel").forEach((p) => p.classList.toggle("active", p.getAttribute("data-panel") === name));
+}
+
+/* ------------------------------------------------------------------ */
+/* 접기/펴기 — ②작성 프롬프트·③입력 탭의 제목 클릭 토글                */
+/* ------------------------------------------------------------------ */
+function initCollapsibles() {
+  // (1) 라벨 제목 → 바로 아래 내용(textarea) 접기
+  $$('[data-panel="prompts"] label.field-label, [data-panel="input"] label.field-label')
+    .forEach((title) => {
+      const content = title.nextElementSibling;
+      if (!content || title.dataset.clpInit) return;
+      title.dataset.clpInit = "1";
+      title.classList.add("collapsible");
+      title.addEventListener("click", (e) => {
+        e.preventDefault();  // 라벨 기본동작(연결 textarea 포커스) 억제
+        const c = title.classList.toggle("collapsed");
+        content.classList.toggle("collapsed-content", c);
+      });
+    });
+  // (2) 섹션 제목 → 섹션 본문 접기(제목만 남김)
+  const heads = [
+    ...$$('[data-panel="prompts"] .style-part-title'),
+    ...$$('[data-panel="prompts"] .reg-ref-head'),
+    ...$$('[data-panel="prompts"] .rfp-ref-head'),   // RFP 내용 + 표지/요약문 입력(둘 다 rfp-ref-head)
+    ...$$('[data-panel="input"] .chat-head > span:first-child'),
+  ];
+  heads.forEach((head) => {
+    if (!head || head.dataset.clpInit) return;
+    const sec = head.closest(".style-group, .reg-ref, .rfp-ref, .chat-box");
+    if (!sec) return;
+    head.dataset.clpInit = "1";
+    head.classList.add("collapsible");
+    head.addEventListener("click", (e) => {
+      // 헤더 안 버튼·체크박스 클릭은 접기에서 제외(초기화·스킬 토글 등 오작동 방지)
+      if (e.target.closest("button, input")) return;
+      const c = sec.classList.toggle("sec-collapsed");
+      head.classList.toggle("collapsed", c);
+    });
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -1307,6 +1354,18 @@ function ovMakePeriod(p = {}, idx = 0) {
   return div;
 }
 
+// 연차 자동 재부여: 각 단계(stage 값)별로 1차년도부터 다시 매긴다.
+// 예: 단계 1,1,2,2 → 1차년도,2차년도,1차년도,2차년도. 2단계가 시작되면 자동으로 1차년도부터.
+function ovRenumberPeriodYears() {
+  const counts = {};
+  $$("#period-list .ov-prow").forEach((row) => {
+    const stage = ((row.querySelector(".ov-period-stage") || {}).value || "").trim();
+    counts[stage] = (counts[stage] || 0) + 1;
+    const yEl = row.querySelector(".ov-period-year");
+    if (yEl) yEl.value = `${counts[stage]}차년도`;
+  });
+}
+
 // "2026-10-01" → "2026.10.01". 빈 값이면 "".
 function ovDateDot(iso) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || "");
@@ -1834,6 +1893,29 @@ async function budgetSyncStages() {
 }
 
 // 8장 비목별 세부 사용계획 표를 참여기관 수만큼 복제하고 연구개발비 총액을 채운다(구조편집).
+// 모든 절에 작성된 마크다운 표를 문서의 기존 표에 한꺼번에 채운다(구조 재구성 → 웹 그리드 반영).
+async function fillAllTables() {
+  if (!state.pid) { toast("프로젝트를 먼저 열어 주세요.", "err"); return; }
+  if (!confirm("작성된 표를 문서의 기존 표에 한꺼번에 채웁니다.\n구조 재구성이라 수십 초 걸릴 수 있습니다(실패 시 자동 복구). 진행할까요?")) return;
+  const btn = $("#btn-fill-tables");
+  const bbtn = $("#btn-build");
+  if (btn) { btn.disabled = true; btn.textContent = "표 채우는 중…"; }
+  if (bbtn) bbtn.disabled = true;
+  toast("표 채우는 중… (문서 표 재구성 + 재추출, 수십 초 소요)");
+  try {
+    const res = await API.fillAllTables(state.pid);
+    const b = (res && res.baked) || {};
+    toast(`표 채우기 완료 — 문서 표 ${b.tables_after != null ? b.tables_after : "?"}개 반영.`, "ok");
+    await loadTree();                       // tree.json 재생성분 반영
+    if (state.nid) await selectNode(state.nid);  // 현재 절 다시 로드(표 그리드 갱신)
+  } catch (e) {
+    toast("표 채우기 실패(자동 복구됨): " + (e && e.message ? e.message : e), "err");
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "📊 표 채우기"; }
+    if (bbtn) bbtn.disabled = false;
+  }
+}
+
 async function budgetSyncDetail() {
   if (!state.pid) { toast("프로젝트를 먼저 열어 주세요.", "err"); return; }
   const btn = $("#btn-detail-sync");
@@ -2393,6 +2475,7 @@ function bindEvents() {
   });
   $("#btn-tree-refresh").addEventListener("click", () => state.pid && loadTree());
   $("#btn-build").addEventListener("click", doBuild);
+  $("#btn-fill-tables").addEventListener("click", fillAllTables);
 
   $("#rfp-file").addEventListener("change", (e) => {
     const f = e.target.files && e.target.files[0];
@@ -2441,8 +2524,13 @@ function bindEvents() {
     ovEnforceRoles();  // 새 기관 역할 자동 결정(한국선급=주관→공동 / 공동→첫 기관 주관)
   });
   $("#btn-period-add").addEventListener("click", () => {
-    const n = $$("#period-list .ov-prow").length;
-    $("#period-list").appendChild(ovMakePeriod({ stage: "1" }, n));
+    const rows = $$("#period-list .ov-prow");
+    // 새 연차는 마지막 행의 단계를 이어받는다(단계 안에서 다음 차년도로 이어지게).
+    const lastStage = rows.length
+      ? ((rows[rows.length - 1].querySelector(".ov-period-stage") || {}).value || "1").trim() || "1"
+      : "1";
+    $("#period-list").appendChild(ovMakePeriod({ stage: lastStage }, rows.length));
+    ovRenumberPeriodYears();  // 단계별 1차년도부터 재부여
     ovRebuildGrid();
     ovRebuildSummary();
   });
@@ -2457,6 +2545,7 @@ function bindEvents() {
       const wasPeriod = row.classList.contains("ov-prow");
       row.remove();
       if (!wasPeriod) ovEnforceRoles();  // 기관 삭제 시 주관 재배정(공동 세트일 때 첫 기관 승격)
+      if (wasPeriod) ovRenumberPeriodYears();  // 연차 삭제 후 단계별 차년도 재부여
       ovRebuildGrid();
       if (wasPeriod) ovRebuildSummary();
       saveOverview({ silent: true });
@@ -2483,6 +2572,10 @@ function bindEvents() {
     if (e.target.classList.contains("ov-period-end")) {
       delete e.target.dataset.auto;
     }
+    // 단계를 바꾸면(예: 2단계 입력) 각 단계의 차년도를 1차년도부터 자동 재부여.
+    if (e.target.classList.contains("ov-period-stage")) {
+      ovRenumberPeriodYears();
+    }
     if (e.target.closest(".ov-inst-name, .ov-period-year, .ov-period-stage")) {
       ovRebuildGrid();
     }
@@ -2508,6 +2601,7 @@ function bindEvents() {
   });
 
   $$(".tab").forEach((t) => t.addEventListener("click", () => switchTab(t.getAttribute("data-tab"))));
+  initCollapsibles();  // ②작성 프롬프트·③입력: 제목 클릭 → 아래 내용 접기/펴기
 
   $("#btn-template-save").addEventListener("click", saveTemplate);
   $("#btn-template-generate").addEventListener("click", generateTemplate);
@@ -2548,8 +2642,76 @@ async function loadRegStatus() {
   } catch (_) { /* 데이터셋 없어도 무시 */ }
 }
 
+/* ------------------------------------------------------------------ */
+/* 좌우 폭 조절(드래그 리사이저)                                       */
+/* ------------------------------------------------------------------ */
+const TREE_W_KEY = "rnd.treeWidth";
+const TREE_W_MIN = 200;   // 목차 최소 폭(px)
+const TREE_W_DEFAULT = 300;
+
+function setTreeWidth(px) {
+  const layout = $(".layout");
+  if (!layout) return;
+  // 우측 편집 패널이 지나치게 좁아지지 않도록 상한을 창 폭에 맞춰 제한.
+  const max = Math.max(TREE_W_MIN, window.innerWidth - 360);
+  const w = Math.round(Math.min(Math.max(px, TREE_W_MIN), max));
+  layout.style.setProperty("--tree-w", w + "px");
+  return w;
+}
+
+function initResizer() {
+  const bar = $("#col-resizer");
+  const layout = $(".layout");
+  if (!bar || !layout) return;
+  // 저장된 폭 복원
+  const saved = parseInt(localStorage.getItem(TREE_W_KEY) || "", 10);
+  if (!Number.isNaN(saved)) setTreeWidth(saved);
+
+  let startX = 0, startW = 0, dragging = false;
+  const onMove = (e) => {
+    if (!dragging) return;
+    const w = setTreeWidth(startW + (e.clientX - startX));
+    e.preventDefault();
+  };
+  const onUp = () => {
+    if (!dragging) return;
+    dragging = false;
+    bar.classList.remove("dragging");
+    document.body.classList.remove("col-resizing");
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    const cur = getComputedStyle(layout).getPropertyValue("--tree-w").trim();
+    const px = parseInt(cur, 10);
+    if (!Number.isNaN(px)) localStorage.setItem(TREE_W_KEY, String(px));
+  };
+  bar.addEventListener("mousedown", (e) => {
+    dragging = true;
+    startX = e.clientX;
+    const col = $("#col-left");
+    startW = col ? col.getBoundingClientRect().width : TREE_W_DEFAULT;
+    bar.classList.add("dragging");
+    document.body.classList.add("col-resizing");
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    e.preventDefault();
+  });
+  // 더블클릭 = 기본 폭으로 초기화
+  bar.addEventListener("dblclick", () => {
+    setTreeWidth(TREE_W_DEFAULT);
+    localStorage.setItem(TREE_W_KEY, String(TREE_W_DEFAULT));
+  });
+  // 키보드 접근성(←/→ 로 조절)
+  bar.addEventListener("keydown", (e) => {
+    const col = $("#col-left");
+    const cur = col ? col.getBoundingClientRect().width : TREE_W_DEFAULT;
+    if (e.key === "ArrowLeft") { localStorage.setItem(TREE_W_KEY, String(setTreeWidth(cur - 16))); e.preventDefault(); }
+    else if (e.key === "ArrowRight") { localStorage.setItem(TREE_W_KEY, String(setTreeWidth(cur + 16))); e.preventDefault(); }
+  });
+}
+
 async function boot() {
   bindEvents();
+  initResizer();
   renderOverviewForm({}); // 모달 폼 골격(빈 행) 초기화
   renderOverviewSummary({});
   loadRegStatus();

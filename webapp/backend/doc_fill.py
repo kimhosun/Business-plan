@@ -700,9 +700,74 @@ def _fill_budget_83(pid: str, index: dict, ov: dict, edits: list) -> int:
     return 1 if filled else 0
 
 
+# ── 2-3 수행일정(간트) 표: 표지 연구기간(periods)으로 단계·연차 헤더 자동 갱신 ──
+def _fill_schedule_23(pid: str, index: dict, ov: dict, edits: list) -> int:
+    """2-3 '추진 일정' 간트표의 단계(N단계)·연차(N차년도) 머리글을 표지 연구기간에 맞춰 갱신.
+
+    표지/요약문 입력의 periods(단계·차년도)를 단계별로 그룹화해, 표의 단계 블록(row1)과 그
+    안의 연차 셀(row2)을 실제 단계·연차로 relabel 한다(남는 연차 칸은 비움). 구조는 바꾸지
+    않고 텍스트만 갱신하며, 세부표('N단계-n차년도(개월)') 제목도 실제 기간으로 갱신한다."""
+    periods = ov.get("periods") or []
+    by_stage: dict[str, list] = defaultdict(list)
+    for p in periods:
+        by_stage[(p.get("stage") or "").strip() or "1"].append(p)
+    proj_stages = sorted(by_stage.items(),
+                         key=lambda kv: int(kv[0]) if kv[0].isdigit() else 999)
+    if not proj_stages:
+        return 0
+
+    filled = 0
+    # (1) 간트표: 시그니처 '추진 일정'+'일련'
+    tp = _find_table(index, "추진 일정", "일련")
+    if tp:
+        cells = tables._cells_of_table(index, tp)
+        cm = _cellmap(index, tp)
+        stage_cells = sorted(
+            (c for c in cells if c["row"] == 1 and "단계" in (c.get("text") or "")),
+            key=lambda c: c["col"])
+        for si, sc in enumerate(stage_cells):
+            lo, hi = sc["col"], sc["col"] + int(sc.get("colspan", 1) or 1)
+            year_cells = sorted(
+                (c for c in cells if c["row"] == 2 and lo <= c["col"] < hi
+                 and "차년도" in (c.get("text") or "")),
+                key=lambda c: c["col"])
+            if si < len(proj_stages):
+                stage_label, ps = proj_stages[si]
+                _put(edits, cm, 1, sc["col"], f"{stage_label}단계")
+                for yi, yc in enumerate(year_cells):
+                    if yi < len(ps):
+                        _put(edits, cm, 2, yc["col"],
+                             (ps[yi].get("year") or f"{yi + 1}차년도").strip())
+                    else:
+                        _clear(edits, cm, 2, yc["col"])   # 남는 연차 칸 비움
+            else:  # 프로젝트 단계보다 많은 표의 단계 블록은 비운다
+                _clear(edits, cm, 1, sc["col"])
+                for yc in year_cells:
+                    _clear(edits, cm, 2, yc["col"])
+        filled = 1
+
+    # (2) 세부표: '…단계-…차년도(개월)' 제목을 실제 기간으로(등장순 ↔ 연차순)
+    flat = [p for _, ps in proj_stages for p in ps]
+    detail_tps = _find_tables(index, "개월", "기간")
+    di = 0
+    for dtp in detail_tps:
+        title = next((c for c in tables._cells_of_table(index, dtp)
+                      if c["row"] == 0 and "개월" in (c.get("text") or "")), None)
+        if not title or di >= len(flat):
+            continue
+        p = flat[di]
+        lab = _period_label(p) or f"{di + 1}차년도"
+        cy = _cal_year(p.get("range"))
+        cm = _cellmap(index, dtp)
+        _put(edits, cm, 0, title["col"], f"{lab}(개월)" + (f" [{cy}]" if cy else ""))
+        di += 1
+        filled = 1
+    return filled
+
+
 # ── 공개 API ─────────────────────────────────────────────────────────────────
 _FILLERS = (_fill_cover, _fill_summary, _fill_team, _fill_budget_81,
-            _fill_budget_82, _fill_budget_83)
+            _fill_budget_82, _fill_budget_83, _fill_schedule_23)
 
 
 def apply(pid: str) -> dict:

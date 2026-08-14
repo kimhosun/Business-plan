@@ -27,6 +27,8 @@ if str(config.SKILL_SCRIPTS) not in sys.path:
 import hwpx_common as _H  # noqa: E402  (skill 공유 모듈)
 from lxml import etree  # noqa: E402
 
+from .tree import build_tree  # noqa: E402  (yaml → tree.json 재생성)
+
 _NS = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
 
 
@@ -203,6 +205,58 @@ def table_schema_hint(pid: str, nid: str, *, max_tables: int = 8,
         "표 형태의 내용을 쓸 때는 **아래 표의 열 머리글·순서를 그대로 따라** 마크다운 표"
         "(| 열1 | 열2 | … |)로 작성하라. 열을 추가·삭제·재배치하지 말 것. 빌드 시 이 마크다운 "
         "표가 아래 기존 표에 자동으로 채워진다(중복 표를 새로 만들지 않는다).\n" + body)
+
+
+# ── 한꺼번에 표 채우기: 작성된 마크다운 표 → 기존 표에 흡수(소스에 bake) ────────
+def fill_all_tables(pid: str) -> dict:
+    """모든 절의 작성 결과(마크다운 표)를 문서의 기존 표에 흡수(재구성)해 **웹 그리드·소스에
+    영구 반영**한다.
+
+    빌드와 동일한 흡수 로직(hwpx_common.fill_template_tables_from_markdown)을 표 전용 모드로
+    실행한 hwpx 를 새 source 로 굽고(bake), yaml·tree 를 재생성한다. 서식(글꼴·출처취합 등)
+    부작용 없이 표만 채운다. 실패 시 source·yaml 을 원상복구한다.
+
+    반환 {ok, tables_before, tables_after, changed}."""
+    base = _base_path(pid)
+    ydir = store.yaml_dir(pid)
+    outd = store.output_dir(pid)
+    outd.mkdir(parents=True, exist_ok=True)
+    tmp = outd / "_filltab.hwpx"
+    bak_base = outd / "_bak_source.hwpx"
+    bak_yaml = outd / "_bak_yaml"
+    bak_tree = outd / "_bak_tree.json"
+    tree_path = store._tree_json(pid)
+
+    def _count_tables() -> int:
+        idx = pipeline._all_nodes_by_path(pid)
+        return sum(1 for n in idx.values() if n.get("kind") == "table")
+
+    before = _count_tables()
+    # 롤백 백업
+    shutil.copy(str(base), str(bak_base))
+    if bak_yaml.exists():
+        shutil.rmtree(str(bak_yaml))
+    shutil.copytree(str(ydir), str(bak_yaml))
+    if tree_path.exists():
+        shutil.copy(str(tree_path), str(bak_tree))
+    try:
+        # 1) 표 흡수만 켠 복원 → 마크다운 표가 기존 표에 채워진 hwpx
+        pipeline.restore(str(base), str(ydir), str(tmp), only_tables=True)
+        # 2) 새 source 로 굽고 yaml 재추출 + tree 재생성(제목 기반 id 안정 → 내비 유지)
+        shutil.copy(str(tmp), str(base))
+        pipeline.extract(str(base), str(ydir))
+        store._write_json(tree_path, build_tree(str(ydir)))
+        after = _count_tables()
+        return {"ok": True, "tables_before": before, "tables_after": after,
+                "changed": before != after}
+    except Exception as exc:  # noqa: BLE001 - 실패하면 원상복구
+        shutil.copy(str(bak_base), str(base))
+        if ydir.exists():
+            shutil.rmtree(str(ydir))
+        shutil.copytree(str(bak_yaml), str(ydir))
+        if bak_tree.exists():
+            shutil.copy(str(bak_tree), str(tree_path))
+        raise RuntimeError(f"표 채우기 실패(원상복구됨): ({type(exc).__name__}) {exc}") from exc
 
 
 # ── 저장(그리드 → yaml) ──────────────────────────────────────────────────────
